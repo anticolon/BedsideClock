@@ -34,7 +34,7 @@ A feature-rich bedside clock built on the ESP32-C6 with a Waveshare 1.47" LCD di
 - Display shows `Snooze: M:SS` in cyan with a live countdown
 - When the countdown reaches zero, the alarm fires again with looping audio
 - Snooze indefinitely until you're ready to get up
-- **Long press** (2 seconds) to fully dismiss the alarm
+- **Long press** (1 second) to fully dismiss the alarm
 - Menu is blocked during alarm and snooze states to prevent accidental changes
 
 ### Color-Coded Display States
@@ -45,7 +45,7 @@ A feature-rich bedside clock built on the ESP32-C6 with a Waveshare 1.47" LCD di
 | Snooze countdown | Cyan | `Snooze: 4:32` |
 
 ### On-Screen Menu (Rotary Encoder)
-A full settings menu accessible by holding the encoder button for 2 seconds:
+A full settings menu accessible by holding the encoder button for 1 second:
 
 ```
   Brightness:              75%
@@ -63,7 +63,7 @@ A full settings menu accessible by holding the encoder button for 2 seconds:
 - **Alarm** and **Webpage** toggle instantly on press (no edit mode needed)
 - **Test** toggles sound playback instantly on press
 - **Wake up** has two-stage editing: press to edit hour `[07]:00`, press again for minute `07:[00]`, press to save
-- **Long press** (2 seconds) exits the menu from anywhere
+- **Long press** (1 second) exits the menu from anywhere
 - Long filenames are truncated with `...` to prevent overflow
 - All settings are persisted to flash memory and survive reboots
 
@@ -245,7 +245,7 @@ Wire the components according to the pinout tables above. The EC11 encoder typic
 The clock displays the time, date, current weather icon, temperature, and daily high/low. When an alarm is armed, the set time appears in red below the date. The clock's IP address is shown in the bottom right corner for easy web access.
 
 ### Setting an Alarm
-**Via the on-screen menu:** Hold the encoder button for 2 seconds to open the menu. Navigate to *Wake up* and press to edit the time. Then navigate to *Alarm* and press to toggle it on.
+**Via the on-screen menu:** Hold the encoder button for 1 second to open the menu. Navigate to *Wake up* and press to edit the time. Then navigate to *Alarm* and press to toggle it on.
 
 **Via the web interface:** Open the clock's IP in a browser, set the hour and minute with the dropdown selectors, and toggle the switch to arm. You can also select the alarm sound, adjust volume, and test playback.
 
@@ -254,8 +254,8 @@ The clock displays the time, date, current weather icon, temperature, and daily 
 2. The selected MP3 plays continuously on loop
 3. **Tap** the encoder to snooze — the display shows a cyan countdown timer
 4. When the snooze timer expires, the alarm fires again
-5. **Long press** the encoder (2 seconds) to fully dismiss the alarm
-6. The alarm auto-disables after firing — re-arm it for the next day
+5. **Long press** the encoder (1 second) to fully dismiss the alarm
+7. The alarm auto-disables after firing — re-arm it for the next day
 
 ### Managing Sound Files
 Navigate to the clock's IP → **Manage Sound Files** to:
