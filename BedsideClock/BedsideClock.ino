@@ -2,6 +2,30 @@
   Bedside Clock — ESP32-C6 + Waveshare 1.47" LCD (320x172)
   ST7789 + Arduino_GFX + LVGL 8.4.0
 
+  MIT License
+
+  Copyright (c) 2025 KL.Design
+
+  Permission is hereby granted, free of charge, to any person obtaining
+  a copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to
+  permit persons to whom the Software is furnished to do so, subject
+  to the following conditions:
+
+  The above copyright notice and this permission notice shall be
+  included in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+  BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+  ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+  CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
   Features:
     - Big centered clock on left 3/4, weather on right 1/4
     - Rich Meteocons weather icons + temperature
@@ -10,9 +34,14 @@
     - Day/night icon variants
     - Web-based location setup (country -> city search)
     - Alarm with MP3 playback from SD card (MAX98357 I2S amp)
+    - Snooze with configurable duration
+    - Rotary encoder menu for on-screen settings
+    - MP3 file upload/delete via web interface
+    - Inspirational wake-up messages
     - Captive Portal WiFi setup (OPEN AP)
     - OTA firmware update
     - BOOT hold (GPIO9) to force AP mode
+    - Web interface enable/disable for security
 
   REQUIRED FILES (same folder as this .ino):
     - lv_conf.h
@@ -28,8 +57,24 @@
     LCD: DC=15, CS=14, SCK=7, MOSI=6, RST=21, BLK=22
     SD:  SCK=7(shared), MOSI=6(shared), MISO=5, CS=4
     I2S: BCLK=2, LRC=3, DIN=1
-    Alarm off button: GPIO0 (active LOW, pullup)
+    Encoder: CLK=18, DT=23, SW=0
+
+  KL.Design
+
+  Third-party assets:
+
+  Meteocons Weather Icons — Copyright (c) Bas Milius
+  Licensed under the MIT License
+  https://github.com/basmilius/weather-icons
+
+  Montserrat Font — Copyright (c) Julieta Ulanovsky, Sol Matas,
+  Juan Pablo del Peral, Jacques Le Bailly
+  Licensed under the SIL Open Font License 1.1
+  https://scripts.sil.org/OFL
+  Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
+
+#define FW_VERSION "1.0.1"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -90,12 +135,12 @@ LV_FONT_DECLARE(lv_font_clock_big);
 #define I2S_LRC    3
 #define I2S_DOUT   1
 
-// Rotary encoder (EC11) — also used as alarm dismiss (tap) and menu (hold 2s)
+// Rotary encoder (EC11) — also used as alarm dismiss (tap) and menu (hold 1s)
 #define ENC_CLK    18   // A pin
 #define ENC_DT     23   // B pin
 #define ENC_SW      0   // Push switch (active LOW)
 
-#define MENU_HOLD_MS  2000   // hold encoder button to enter menu
+#define MENU_HOLD_MS  1000   // hold encoder button to enter/exit menu
 
 #define FORCE_PORTAL_HOLD_MS  1200
 
@@ -599,7 +644,7 @@ int consumeEncoderDelta() {
   return d;
 }
 
-// Check for short press (returns true once on release after <2s hold)
+// Check for short press (returns true once on release after <1s hold)
 bool encoderShortPress() {
   if (!encSwPressed && !encSwHandled && encSwDownTime > 0 && !encLongHandled) {
     encSwHandled = true;
@@ -609,7 +654,7 @@ bool encoderShortPress() {
   return false;
 }
 
-// Check for long press (returns true once after 2s hold while still pressed)
+// Check for long press (returns true once after 1s hold while still pressed)
 bool encoderLongPress() {
   if (encSwPressed && !encLongHandled && encSwDownTime > 0) {
     if (millis() - encSwDownTime >= MENU_HOLD_MS) {
@@ -968,7 +1013,9 @@ void build_portal_ui()
   lv_obj_set_style_text_color(scr, lv_color_white(), 0);
 
   lv_obj_t *title = lv_label_create(scr);
-  lv_label_set_text(title, "ESP32-C6 WiFi Setup");
+  char titleBuf[40];
+  snprintf(titleBuf, sizeof(titleBuf), "Bedside Clock v%s", FW_VERSION);
+  lv_label_set_text(title, titleBuf);
   lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
   lv_obj_set_style_text_color(title, lv_color_white(), 0);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
@@ -1484,7 +1531,7 @@ String clockHomePage()
   html += ".toggle input:checked+.slider{background:#28a745;}";
   html += ".toggle input:checked+.slider:before{transform:translateX(24px);background:#fff;}";
   html += "</style></head><body><div class='box'>";
-  html += "<h2>Bedside Clock</h2>";
+  html += "<h2>Bedside Clock <span style='font-size:12px;color:#555;'>v" + String(FW_VERSION) + "</span></h2>";
   html += "<p style='color:#aaa;'>Location: <b style='color:#fff;'>" + cfgCity + ", " + cfgCountry + "</b></p>";
   if (weatherValid) {
     char t[16]; snprintf(t, sizeof(t), "%.0f&deg;C", weatherTemp);
@@ -2116,6 +2163,7 @@ bool checkBootHoldWithProgress()
 void setup()
 {
   Serial.begin(115200);
+  Serial.printf("\n\nBedside Clock v%s\n", FW_VERSION);
   delay(200);
 
   pinMode(BOOT_BTN_PIN, INPUT_PULLUP);
