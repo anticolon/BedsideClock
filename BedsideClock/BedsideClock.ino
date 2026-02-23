@@ -1753,8 +1753,6 @@ String fileManagerPage() {
   } else {
     for (int i = 0; i < mp3FileCount; i++) {
       String fname = mp3Files[i];
-      String display = fname;
-      if (display.startsWith("/")) display = display.substring(1);
 
       // Get file size
       File f = SD.open(fname);
@@ -1767,10 +1765,13 @@ String fileManagerPage() {
 
       bool isActive = (fname == alarmSound);
 
+      String displayName = fname;
+      if (displayName.startsWith("/")) displayName = displayName.substring(1);
+
       html += "<div class='file-row'>";
-      html += "<span class='file-name" + String(isActive ? " active" : "") + "'>" + display + "</span>";
+      html += "<span class='file-name" + String(isActive ? " active" : "") + "'>" + displayName + "</span>";
       html += "<span class='file-size'>" + sizeStr + "</span>";
-      html += "<button class='btn-del' onclick=\"delFile('" + fname + "')\">Delete</button>";
+      html += "<button class='btn-del' onclick=\"delFile('" + displayName + "')\">Delete</button>";
       html += "</div>";
     }
   }
@@ -1815,9 +1816,15 @@ String fileManagerPage() {
 
   html += "function delFile(name){";
   html += "  if(!confirm('Delete '+name+'?'))return;";
-  html += "  fetch('/files/delete?f='+encodeURIComponent(name))";
-  html += "    .then(r=>r.text()).then(r=>{location.reload();})";
-  html += "    .catch(e=>{alert('Delete failed');});";
+  html += "  var xhr=new XMLHttpRequest();";
+  html += "  xhr.open('POST','/files/delete',true);";
+  html += "  xhr.setRequestHeader('Content-Type','application/x-www-form-urlencoded');";
+  html += "  xhr.onload=function(){";
+  html += "    if(xhr.status==200){location.reload();}";
+  html += "    else{alert('Delete failed: '+xhr.responseText);}";
+  html += "  };";
+  html += "  xhr.onerror=function(){alert('Delete request failed');};";
+  html += "  xhr.send('f='+encodeURIComponent(name));";
   html += "}";
   html += "</script>";
 
@@ -1988,23 +1995,31 @@ void setupSettingsEndpoints()
   );
 
   // File delete
-  server.on("/files/delete", HTTP_GET, [](AsyncWebServerRequest *r) {
+  server.on("/files/delete", HTTP_POST, [](AsyncWebServerRequest *r) {
     WEB_GUARD();
     if (!sdCardOk) { r->send(500, "text/plain", "No SD card"); return; }
-    if (!r->hasParam("f")) { r->send(400, "text/plain", "Missing filename"); return; }
-    String fname = r->getParam("f")->value();
-    if (SD.exists(fname)) {
+    if (!r->hasParam("f", true)) { r->send(400, "text/plain", "Missing filename"); return; }
+    String fname = r->getParam("f", true)->value();
+    // Ensure leading slash
+    if (!fname.startsWith("/")) fname = "/" + fname;
+    Serial.printf("Delete request: [%s]\n", fname.c_str());
+    if (SD.exists(fname.c_str())) {
       // If deleting the active alarm sound, clear it
       if (fname == alarmSound) {
         alarmSound = "";
         saveAlarmSettings();
       }
-      SD.remove(fname);
-      rescanMP3Files();
-      Serial.printf("Deleted: %s\n", fname.c_str());
-      r->send(200, "text/plain", "OK");
+      if (SD.remove(fname.c_str())) {
+        rescanMP3Files();
+        Serial.printf("Deleted OK: %s\n", fname.c_str());
+        r->send(200, "text/plain", "OK");
+      } else {
+        Serial.printf("SD.remove failed: %s\n", fname.c_str());
+        r->send(500, "text/plain", "Delete failed");
+      }
     } else {
-      r->send(404, "text/plain", "File not found");
+      Serial.printf("File not found: %s\n", fname.c_str());
+      r->send(404, "text/plain", "File not found: " + fname);
     }
   });
 }
