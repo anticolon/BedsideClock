@@ -242,9 +242,17 @@ Connect the external components to the Waveshare ESP32-C6 board according to the
 
 ### 3. Arduino IDE Setup
 1. Install the **ESP32** board package (select ESP32-C6 as your board)
-2. Install all required external libraries listed above
-3. Place `lv_conf.h` in your LVGL library folder (typically `libraries/lvgl/`)
-4. Open `BedsideClock.ino` and upload
+2. Install libraries available through the Arduino Library Manager:
+   - **Arduino_GFX** — search "Arduino_GFX" in Library Manager
+   - **LVGL** (v8.4.x) — search "lvgl" in Library Manager
+   - **ESP8266Audio** — search "ESP8266Audio" in Library Manager
+3. Install **AsyncTCP** and **ESPAsyncWebServer** manually (not available in Library Manager):
+   - Download [AsyncTCP](https://github.com/me-no-dev/AsyncTCP) → Click **Code** → **Download ZIP**
+   - Download [ESPAsyncWebServer](https://github.com/me-no-dev/ESPAsyncWebServer) → Click **Code** → **Download ZIP**
+   - In Arduino IDE: **Sketch** → **Include Library** → **Add .ZIP Library...** → select `AsyncTCP-main.zip`
+   - Repeat for `ESPAsyncWebServer-main.zip`
+4. Place `lv_conf.h` in your LVGL library folder (typically `libraries/lvgl/`)
+5. Open `BedsideClock.ino` and upload
 
 ### 4. First Boot — WiFi Configuration
 1. The clock starts in **AP mode** and creates a WiFi access point
