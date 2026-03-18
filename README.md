@@ -1,6 +1,6 @@
 # ESP32-C6 Bedside Clock
 
-A feature-rich bedside clock built on the ESP32-C6 with a Waveshare 1.47" LCD display, live weather, MP3 alarm with snooze, and a rotary encoder menu — all configurable via a built-in web interface.
+A feature-rich bedside clock built on the Waveshare ESP32-C6 development board with integrated 1.47" LCD display, live weather, MP3 alarm with snooze, and a rotary encoder menu — all configurable via a built-in web interface.
 
 ![ESP32-C6](https://img.shields.io/badge/ESP32--C6-RISC--V-blue)
 ![Arduino](https://img.shields.io/badge/Arduino-IDE-teal)
@@ -100,16 +100,17 @@ A responsive, dark-themed web interface accessible from any device on the same n
 ### Components
 | Component | Description |
 |-----------|-------------|
-| ESP32-C6 | Microcontroller (RISC-V, WiFi 6, BLE 5) |
-| Waveshare 1.47" LCD | 320×172 pixels, ST7789 driver, SPI interface |
+| Waveshare ESP32-C6 1.47" LCD | All-in-one dev board: ESP32-C6 (RISC-V, WiFi 6, BLE 5), 320×172 ST7789 display, and onboard SD card slot |
 | MAX98357 | I2S mono amplifier for audio output |
 | EC11 Rotary Encoder | 7-pin, with push button for navigation |
-| SD Card | Onboard (shares SPI with display), FAT32 formatted |
+| MicroSD Card | FAT32 formatted, for alarm MP3 files |
 | Speaker | Connected to MAX98357 output terminals |
 
 ### Pinout
 
-#### Display (ST7789 SPI)
+The display and SD card are integrated on the Waveshare board with fixed pin assignments. The following pins are used for external components:
+
+#### Onboard Display (ST7789 SPI — factory wired)
 | Signal | GPIO |
 |--------|------|
 | DC | 15 |
@@ -119,7 +120,7 @@ A responsive, dark-themed web interface accessible from any device on the same n
 | RST | 21 |
 | Backlight | 22 |
 
-#### SD Card (shared SPI bus)
+#### Onboard SD Card (shared SPI bus — factory wired)
 | Signal | GPIO |
 |--------|------|
 | MISO | 5 |
@@ -231,7 +232,7 @@ The encoder uses interrupt-driven full quadrature decoding (ISR on both CLK and 
 ## Setup
 
 ### 1. Hardware Assembly
-Wire the components according to the pinout tables above. The EC11 encoder typically has 7 pins — two are for the rotary (CLK, DT), one for the push button (SW), one for VCC (+), and the remaining are GND. Connect all GND pins to ground.
+Connect the external components to the Waveshare ESP32-C6 board according to the pinout tables above. The display and SD card are already integrated on the board — you only need to wire the MAX98357 amplifier, EC11 rotary encoder, and speaker.
 
 ### 2. SD Card
 - Format as **FAT32**
