@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.0.2"
+#define FW_VERSION "1.0.3"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -1902,6 +1902,8 @@ String fileManagerPage() {
   html += ".file-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#1a1a1a;border-radius:8px;margin-bottom:6px;}";
   html += ".file-name{color:#eee;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;margin-right:10px;}";
   html += ".file-size{color:#888;font-size:12px;margin-right:10px;white-space:nowrap;}";
+  html += ".btn-dl{background:#007bff;color:#fff;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;margin-right:6px;text-decoration:none;}";
+  html += ".btn-dl:hover{background:#0069d9;text-decoration:none;}";
   html += ".btn-del{background:#c0392b;color:#fff;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;}";
   html += ".btn-del:hover{background:#e74c3c;}";
   html += ".upload-box{background:#1a1a1a;border:2px dashed #333;border-radius:10px;padding:20px;text-align:center;margin-bottom:20px;}";
@@ -1955,6 +1957,7 @@ String fileManagerPage() {
       html += "<div class='file-row'>";
       html += "<span class='file-name" + String(isActive ? " active" : "") + "'>" + displayName + "</span>";
       html += "<span class='file-size'>" + sizeStr + "</span>";
+      html += "<a class='btn-dl' href='#' onclick=\"dlFile('" + displayName + "');return false;\">Download</a>";
       html += "<button class='btn-del' onclick=\"delFile('" + displayName + "')\">Delete</button>";
       html += "</div>";
     }
@@ -1996,6 +1999,33 @@ String fileManagerPage() {
   html += "  };";
   html += "  xhr.onerror=function(){stat.textContent='Upload failed';stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';};";
   html += "  var fd=new FormData();fd.append('file',f);xhr.send(fd);";
+  html += "}";
+
+  html += "function dlFile(name){";
+  html += "  var btn=event.target;";
+  html += "  var origText=btn.textContent;";
+  html += "  btn.style.pointerEvents='none';btn.style.opacity='0.7';";
+  html += "  var xhr=new XMLHttpRequest();";
+  html += "  xhr.open('GET','/dl?f='+encodeURIComponent(name),true);";
+  html += "  xhr.responseType='blob';";
+  html += "  xhr.onprogress=function(e){";
+  html += "    if(e.lengthComputable){var p=Math.round(e.loaded*100/e.total);btn.textContent=p+'%';}";
+  html += "    else{btn.textContent=Math.round(e.loaded/1024)+'KB';}";
+  html += "  };";
+  html += "  xhr.onload=function(){";
+  html += "    if(xhr.status==200){";
+  html += "      var a=document.createElement('a');";
+  html += "      a.href=URL.createObjectURL(xhr.response);";
+  html += "      a.download=name;a.click();";
+  html += "      URL.revokeObjectURL(a.href);";
+  html += "    }else{alert('Download failed');}";
+  html += "    btn.textContent=origText;btn.style.pointerEvents='';btn.style.opacity='';";
+  html += "  };";
+  html += "  xhr.onerror=function(){";
+  html += "    alert('Download failed');";
+  html += "    btn.textContent=origText;btn.style.pointerEvents='';btn.style.opacity='';";
+  html += "  };";
+  html += "  xhr.send();";
   html += "}";
 
   html += "function delFile(name){";
@@ -2150,6 +2180,45 @@ void setupSettingsEndpoints()
   server.on("/files", HTTP_GET, [](AsyncWebServerRequest *r) {
     WEB_GUARD();
     r->send(200, "text/html", fileManagerPage());
+  });
+
+  // File download — separate path to avoid /files route conflict
+  server.on("/dl", HTTP_GET, [](AsyncWebServerRequest *r) {
+    WEB_GUARD();
+    if (!sdCardOk) { r->send(500, "text/plain", "No SD card"); return; }
+    if (!r->hasParam("f")) { r->send(400, "text/plain", "Missing filename"); return; }
+    String fname = r->getParam("f")->value();
+    if (!fname.startsWith("/")) fname = "/" + fname;
+    Serial.printf("Download request: [%s]\n", fname.c_str());
+    if (!SD.exists(fname.c_str())) { r->send(404, "text/plain", "File not found"); return; }
+    
+    File f = SD.open(fname.c_str(), FILE_READ);
+    if (!f) { r->send(500, "text/plain", "Cannot open file"); return; }
+    size_t fSize = f.size();
+    f.close();
+
+    String dlName = fname;
+    if (dlName.startsWith("/")) dlName = dlName.substring(1);
+
+    // Use beginResponse with File object — pass opened file directly
+    File *pf = new File(SD.open(fname.c_str(), FILE_READ));
+    if (!*pf) { delete pf; r->send(500, "text/plain", "Cannot open file"); return; }
+
+    Serial.printf("Serving: %s (%u bytes)\n", fname.c_str(), fSize);
+
+    AsyncWebServerResponse *resp = r->beginChunkedResponse("audio/mpeg",
+      [pf](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+        if (!*pf || pf->available() == 0) {
+          pf->close();
+          delete pf;
+          return 0;
+        }
+        size_t chunk = min(maxLen, (size_t)1024);
+        return pf->read(buffer, chunk);
+      });
+    resp->addHeader("Content-Disposition", "attachment; filename=\"" + dlName + "\"");
+    resp->addHeader("Content-Length", String(fSize));
+    r->send(resp);
   });
 
   // File upload
