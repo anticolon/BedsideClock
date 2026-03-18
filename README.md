@@ -251,7 +251,7 @@ Connect the external components to the Waveshare ESP32-C6 board according to the
    - Download [ESPAsyncWebServer](https://github.com/me-no-dev/ESPAsyncWebServer) → Click **Code** → **Download ZIP**
    - In Arduino IDE: **Sketch** → **Include Library** → **Add .ZIP Library...** → select `AsyncTCP-main.zip`
    - Repeat for `ESPAsyncWebServer-main.zip`
-4. Place `lv_conf.h` in your LVGL library folder (typically `libraries/lvgl/`)
+4. Place `lv_conf.h` in the same folder as `BedsideClock.ino`
 5. Open `BedsideClock.ino` and upload
 
 ### 4. First Boot — WiFi Configuration
