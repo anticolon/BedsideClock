@@ -20,7 +20,7 @@ A feature-rich bedside clock built on the ESP32-C6 with a Waveshare 1.47" LCD di
 - Balanced layout: clock and date on the left 3/4, weather panel on the right 1/4
 
 ### Alarm System
-- MP3 alarm playback from SD card via I2S amplifier
+- MP3 alarm playback from SD card via I2S amplifier with pre-read audio buffer to prevent dropouts on shared SPI bus
 - Continuous looping of the alarm sound until snoozed or dismissed
 - One-shot alarm — fires once at the set time, then auto-disables (re-arm for the next day)
 - Adjustable volume (0–100%) with live preview
@@ -66,14 +66,15 @@ A full settings menu accessible by holding the encoder button for 1 second:
 - **Long press** (1 second) exits the menu from anywhere
 - Long filenames are truncated with `...` to prevent overflow
 - All settings are persisted to flash memory and survive reboots
+- Interrupt-driven rotary encoder ensures reliable navigation even during fast rotation
 
 ### Web Interface
 A responsive, dark-themed web interface accessible from any device on the same network:
 
 - **Home page** — Set alarm time (24h format dropdowns), toggle alarm on/off, select alarm sound, adjust volume with slider, test playback, adjust display brightness
-- **Manage Sound Files** — Upload new MP3 files to the SD card with a progress bar, view file list with file sizes, delete unwanted files, see SD card usage statistics
+- **Manage Sound Files** — Upload new MP3 files to the SD card with a progress bar, download files with live progress on the button, view file list with file sizes, delete unwanted files, see SD card usage statistics
 - **Location Settings** — Search for your city using the Open-Meteo Geocoding API, timezone is set automatically
-- **Firmware Update** — OTA (Over-The-Air) firmware updates directly from the browser
+- **Firmware Update** — OTA (Over-The-Air) firmware updates with upload progress bar, automatic reboot detection, and redirect to home page when the device comes back online
 - **Web access control** — Enable/disable the entire web interface from the on-screen menu to prevent unauthorized access. When disabled, all endpoints return `403 Forbidden`. OTA updates and the AP config portal remain accessible for recovery.
 
 ### Captive Portal Setup (AP Mode)
@@ -84,6 +85,7 @@ A responsive, dark-themed web interface accessible from any device on the same n
 
 ### MP3 File Management
 - Upload MP3 files to the SD card via the web interface with a real-time progress bar
+- Download MP3 files from the SD card with live progress percentage on the download button
 - Delete files directly from the file manager page
 - Currently active alarm sound is highlighted in gold
 - SD card total and used space displayed at the bottom of the file manager
@@ -160,7 +162,7 @@ No external pull-up resistors are needed — the code enables internal pullups o
 |---------|---------|---------|
 | [Arduino_GFX](https://github.com/moononournation/Arduino_GFX) | Display driver for ST7789 | BSD |
 | [LVGL 8.4](https://github.com/lvgl/lvgl) | Graphics UI framework | MIT |
-| [ESP8266Audio](https://github.com/earlephilhower/ESP8266Audio) | MP3 decoding and I2S audio output | GPL-3.0 |
+| [ESP8266Audio](https://github.com/earlephilhower/ESP8266Audio) | MP3 decoding and I2S audio output (incl. AudioFileSourceBuffer) | GPL-3.0 |
 | [ESPAsyncWebServer](https://github.com/me-no-dev/ESPAsyncWebServer) | Async web server for config pages and file uploads | LGPL-2.1 |
 | [AsyncTCP](https://github.com/me-no-dev/AsyncTCP) | TCP library required by ESPAsyncWebServer | LGPL-3.0 |
 | SD | SD card access | Built-in |
@@ -193,6 +195,24 @@ A custom large clock font (`lv_font_clock_big.c`) is used for the main time disp
 | [Open-Meteo Weather](https://open-meteo.com/) | Current weather + daily high/low forecast | None (free, no key required) |
 | [Open-Meteo Geocoding](https://open-meteo.com/en/docs/geocoding-api) | City search for automatic timezone/location | None (free, no key required) |
 | NTP (pool.ntp.org) | Time synchronization | None |
+
+---
+
+## Architecture Notes
+
+### Async Web Server Safety
+ESPAsyncWebServer runs its callbacks from the WiFi/TCP task, not the Arduino `loop()`. Directly calling audio functions (start/stop/volume) or LVGL UI updates from web handlers causes race conditions, use-after-free crashes, and corrupted playback state. All audio and UI operations requested by web endpoints are deferred via volatile command flags and processed safely in the main loop:
+
+- `audioReqTestStart` / `audioReqTestStop` — test playback control
+- `audioReqDismiss` — alarm dismiss from web
+- `audioReqVolume` — volume changes from web sliders
+- `uiReqAlarmLabel` — alarm label refresh
+
+### Audio Buffering
+MP3 playback uses `AudioFileSourceBuffer` (2KB) wrapping `AudioFileSourceSD` to absorb SPI bus contention when the LCD and SD card share the same SPI bus. Without this buffer, display flushes can starve the audio decoder and cause mid-song dropouts.
+
+### Rotary Encoder
+The encoder uses interrupt-driven full quadrature decoding (ISR on both CLK and DT edges via `CHANGE`). A 16-entry state table maps every transition to +1, -1, or 0 (invalid/bounce), ensuring reliable direction detection even at high rotation speeds. Raw edge counts are divided by 4 (EC11 standard) to emit one step per detent.
 
 ---
 
@@ -260,9 +280,13 @@ The clock displays the time, date, current weather icon, temperature, and daily 
 ### Managing Sound Files
 Navigate to the clock's IP → **Manage Sound Files** to:
 - **Upload** new MP3 files with a visual progress bar
+- **Download** files from the SD card with live progress on the button
 - **Delete** files you no longer want
 - See file sizes and total SD card usage
 - The currently active alarm sound is highlighted in gold
+
+### Updating Firmware
+Navigate to the clock's IP → **Firmware Update** to upload a new `.bin` file. The page shows upload progress, then automatically detects when the device reboots and redirects to the home page.
 
 ### Disabling the Web Interface
 For security, you can disable the web interface from the on-screen menu. Navigate to *Webpage* and press to toggle it off. When disabled, all web requests return `403 Forbidden`. The setting persists across reboots. OTA firmware updates and the AP captive portal are not affected, so you can always recover access.
@@ -293,6 +317,27 @@ When the alarm fires, one of these messages is randomly chosen and displayed in 
 - *Your family believes in you!*
 
 The same message persists through snooze cycles — a fresh random pick happens the next time the alarm triggers.
+
+---
+
+## Changelog
+
+### v1.0.3
+- **OTA firmware update overhaul** — JS-based upload with progress bar, automatic reboot detection and redirect to home page
+- **MP3 file download** — Added `/dl` endpoint with chunked SD card file serving and live progress percentage on the download button
+- **Web UI test button sync** — `saveAlarm()` now checks actual test playback status from server instead of blindly resetting the button
+- **Default location** changed from Eslöv to Stockholm for first-time setup
+
+### v1.0.2
+- **Rotary encoder** — Switched from polled single-edge reading to interrupt-driven full quadrature decode (ISR on both pins, state table, ÷4 for EC11 detents). Eliminates missed steps and direction reversals during fast rotation
+- **Async web server race conditions** — All audio and LVGL operations from web handlers are now deferred via volatile command flags and processed in the main loop, preventing use-after-free crashes
+- **Audio buffering** — Added `AudioFileSourceBuffer` (2KB) wrapping SD card reads to prevent mid-song dropouts caused by SPI bus contention with the LCD
+- **Test button state** — Added `/alarm/testStatus` polling endpoint; button auto-resets when song ends naturally
+- **Song change during test** — Changing the sound dropdown while test is playing stops the current playback
+- **Volume slider** — Volume changes from web sliders are now deferred to the main loop to prevent audio corruption
+
+### v1.0.1
+- Initial public release
 
 ---
 
