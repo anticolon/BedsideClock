@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.0.1"
+#define FW_VERSION "1.0.2"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -98,6 +98,7 @@
 
 // Audio (ESP8266Audio library)
 #include <AudioFileSourceSD.h>
+#include <AudioFileSourceBuffer.h>
 #include <AudioGeneratorMP3.h>
 #include <AudioOutputI2S.h>
 
@@ -109,8 +110,8 @@ LV_FONT_DECLARE(lv_font_clock_big);
 // ==========================================================================
 //  DEFAULTS (used if nothing saved in Preferences)
 // ==========================================================================
-#define DEFAULT_LAT       55.84
-#define DEFAULT_LON       13.34
+#define DEFAULT_LAT       59.33
+#define DEFAULT_LON       18.07
 #define DEFAULT_TZ_NAME   "Europe/Stockholm"
 #define NTP_SERVER        "pool.ntp.org"
 #define WEATHER_INTERVAL_MS  (15UL * 60 * 1000)  // 15 minutes
@@ -201,9 +202,17 @@ int mp3FileCount = 0;
 // ==========================================================================
 AudioGeneratorMP3 *mp3Player = nullptr;
 AudioFileSourceSD *mp3Source = nullptr;
+AudioFileSourceBuffer *mp3Buffer = nullptr;
 AudioOutputI2S    *audioOut  = nullptr;
 bool audioPlaying = false;
 bool testPlaying = false;     // test playback (non-alarm)
+
+// Audio command flags — set by async web handlers, acted on by main loop
+volatile bool audioReqTestStart = false;
+volatile bool audioReqTestStop  = false;
+volatile bool audioReqDismiss   = false;
+volatile bool audioReqVolume    = false;  // apply volume change from main loop
+volatile bool uiReqAlarmLabel   = false;  // request alarm label refresh from main loop
 
 // ==========================================================================
 //  Alarm settings (saved in Preferences)
@@ -242,14 +251,31 @@ const char* currentAlarmMsg = alarmMessages[0];
 int    alarmLastTrigDay = -1;  // day of month last triggered
 
 // ==========================================================================
-//  Rotary Encoder state
+//  Rotary Encoder state (ISR-driven full quadrature decode)
 // ==========================================================================
 volatile int encDelta = 0;          // accumulated rotation (+/- ticks)
-static int encLastCLK = HIGH;
 static bool encSwPressed = false;
 static bool encSwHandled = false;   // prevent repeat actions
 static uint32_t encSwDownTime = 0;
 static bool encLongHandled = false; // long-press already acted on
+
+// Full quadrature state table — maps (prevState << 2 | newState) to direction.
+// 0 = no move or invalid, +1 = CW, -1 = CCW
+static const int8_t encTable[16] = {
+   0, -1,  1,  0,
+   1,  0,  0, -1,
+  -1,  0,  0,  1,
+   0,  1, -1,  0
+};
+static volatile uint8_t encState = 0;  // last 2-bit gray code state
+
+void IRAM_ATTR encoderISR() {
+  uint8_t s = encState & 3;  // previous state
+  if (digitalRead(ENC_CLK)) s |= 4;
+  if (digitalRead(ENC_DT))  s |= 8;
+  encState = (s >> 2);       // save new state for next time
+  encDelta += encTable[s];
+}
 
 // ==========================================================================
 //  On-screen Menu state
@@ -273,7 +299,7 @@ static lv_obj_t *menuValueLabels[MENU_ITEMS] = {};
 float  cfgLat = DEFAULT_LAT;
 float  cfgLon = DEFAULT_LON;
 String cfgTzName = DEFAULT_TZ_NAME;
-String cfgCity = "Eslöv";
+String cfgCity = "Stockholm";
 String cfgCountry = "Sweden";
 int    cfgUtcOffset = 3600;    // seconds, fetched from Open-Meteo
 int    cfgBrightness = 255;   // 0-255 backlight PWM
@@ -336,7 +362,7 @@ void loadLocationSettings() {
   cfgLat     = prefs.getFloat("lat", DEFAULT_LAT);
   cfgLon     = prefs.getFloat("lon", DEFAULT_LON);
   cfgTzName  = prefs.getString("tz", DEFAULT_TZ_NAME);
-  cfgCity    = prefs.getString("city", "Eslöv");
+  cfgCity    = prefs.getString("city", "Stockholm");
   cfgCountry = prefs.getString("country", "Sweden");
   cfgUtcOffset = prefs.getInt("utcoff", 3600);
   cfgBrightness = prefs.getInt("bright", 255);
@@ -432,6 +458,12 @@ void initSDCard() {
 }
 
 // ==========================================================================
+//  Forward declarations (needed for cross-references in audio/alarm code)
+// ==========================================================================
+void dismissAlarm();
+void updateAlarmLabel();
+
+// ==========================================================================
 //  Audio playback
 // ==========================================================================
 void applyVolume() {
@@ -449,13 +481,15 @@ void startAlarmSound() {
   stopAlarmSound();
   applyVolume();
   mp3Source = new AudioFileSourceSD(alarmSound.c_str());
+  mp3Buffer = new AudioFileSourceBuffer(mp3Source, 2048);
   mp3Player = new AudioGeneratorMP3();
-  if (mp3Player->begin(mp3Source, audioOut)) {
+  if (mp3Player->begin(mp3Buffer, audioOut)) {
     audioPlaying = true;
     Serial.printf("Alarm playing: %s\n", alarmSound.c_str());
   } else {
     Serial.println("Failed to start MP3");
     delete mp3Player; mp3Player = nullptr;
+    delete mp3Buffer; mp3Buffer = nullptr;
     delete mp3Source; mp3Source = nullptr;
   }
 }
@@ -464,6 +498,9 @@ void stopAlarmSound() {
   if (mp3Player) {
     if (mp3Player->isRunning()) mp3Player->stop();
     delete mp3Player; mp3Player = nullptr;
+  }
+  if (mp3Buffer) {
+    delete mp3Buffer; mp3Buffer = nullptr;
   }
   if (mp3Source) {
     delete mp3Source; mp3Source = nullptr;
@@ -477,14 +514,16 @@ void startTestSound() {
   stopAlarmSound();
   applyVolume();
   mp3Source = new AudioFileSourceSD(alarmSound.c_str());
+  mp3Buffer = new AudioFileSourceBuffer(mp3Source, 2048);
   mp3Player = new AudioGeneratorMP3();
-  if (mp3Player->begin(mp3Source, audioOut)) {
+  if (mp3Player->begin(mp3Buffer, audioOut)) {
     audioPlaying = true;
     testPlaying = true;
     Serial.printf("Test playing: %s at %d%%\n", alarmSound.c_str(), alarmVolume);
   } else {
     Serial.println("Failed to start test MP3");
     delete mp3Player; mp3Player = nullptr;
+    delete mp3Buffer; mp3Buffer = nullptr;
     delete mp3Source; mp3Source = nullptr;
   }
 }
@@ -494,22 +533,43 @@ void stopTestSound() {
 }
 
 void loopAudio() {
+  // First, process any commands queued by async web handlers
+  if (audioReqTestStop) {
+    audioReqTestStop = false;
+    stopTestSound();
+  }
+  if (audioReqDismiss) {
+    audioReqDismiss = false;
+    dismissAlarm();
+  }
+  if (audioReqTestStart) {
+    audioReqTestStart = false;
+    startTestSound();
+  }
+  if (audioReqVolume) {
+    audioReqVolume = false;
+    applyVolume();
+  }
+
   if (mp3Player && mp3Player->isRunning()) {
     if (!mp3Player->loop()) {
       // MP3 ended — clean up
       mp3Player->stop();
       delete mp3Player; mp3Player = nullptr;
+      delete mp3Buffer; mp3Buffer = nullptr;
       delete mp3Source; mp3Source = nullptr;
       if (alarmFiring) {
         // Restart loop for alarm
         delay(50);  // brief pause before restarting
         mp3Source = new AudioFileSourceSD(alarmSound.c_str());
+        mp3Buffer = new AudioFileSourceBuffer(mp3Source, 2048);
         mp3Player = new AudioGeneratorMP3();
-        if (mp3Player->begin(mp3Source, audioOut)) {
+        if (mp3Player->begin(mp3Buffer, audioOut)) {
           Serial.println("Alarm MP3 looping...");
         } else {
           Serial.println("Failed to restart alarm MP3");
           delete mp3Player; mp3Player = nullptr;
+          delete mp3Buffer; mp3Buffer = nullptr;
           delete mp3Source; mp3Source = nullptr;
           audioPlaying = false;
         }
@@ -614,20 +674,10 @@ void updateAlarmLabel() {
 }
 
 // ==========================================================================
-//  Rotary Encoder reading (polled, not ISR — simpler on ESP32-C6)
+//  Rotary Encoder reading (rotation via ISR, button polled here)
 // ==========================================================================
 void readEncoder() {
-  int clk = digitalRead(ENC_CLK);
-  if (clk != encLastCLK && clk == LOW) {
-    if (digitalRead(ENC_DT) != clk) {
-      encDelta++;   // clockwise
-    } else {
-      encDelta--;   // counter-clockwise
-    }
-  }
-  encLastCLK = clk;
-
-  // Button state
+  // Button state (polled — no need for ISR on a slow human press)
   bool pressed = (digitalRead(ENC_SW) == LOW);
   if (pressed && !encSwPressed) {
     encSwDownTime = millis();
@@ -637,11 +687,21 @@ void readEncoder() {
   encSwPressed = pressed;
 }
 
-// Consume rotation delta (returns + or - ticks, resets to 0)
+// Consume rotation delta (returns whole detent clicks, resets remainder)
+// Full quadrature decode gives 4 state changes per EC11 detent.
+// We accumulate and only emit complete detents.
+static int encAccum = 0;
+#define ENC_COUNTS_PER_DETENT 4
+
 int consumeEncoderDelta() {
-  int d = encDelta;
+  noInterrupts();
+  int raw = encDelta;
   encDelta = 0;
-  return d;
+  interrupts();
+  encAccum += raw;
+  int detents = encAccum / ENC_COUNTS_PER_DETENT;
+  encAccum %= ENC_COUNTS_PER_DETENT;  // keep remainder
+  return detents;
 }
 
 // Check for short press (returns true once on release after <1s hold)
@@ -1640,9 +1700,21 @@ String clockHomePage()
   html += "}";
 
   // Test play/stop
+  html += "let testPoll=null;";
+  html += "function updateTestBtn(playing){";
+  html += "  document.getElementById('testBtn').textContent=playing?'Stop Test':'Play Test';";
+  html += "  if(playing&&!testPoll){";
+  html += "    testPoll=setInterval(()=>{";
+  html += "      fetch('/alarm/testStatus').then(r=>r.text()).then(r=>{";
+  html += "        if(r!=='playing'){updateTestBtn(false);}";
+  html += "      }).catch(()=>{});";
+  html += "    },2000);";
+  html += "  }";
+  html += "  if(!playing&&testPoll){clearInterval(testPoll);testPoll=null;}";
+  html += "}";
   html += "function toggleTest(){";
   html += "  fetch('/alarm/test').then(r=>r.text()).then(r=>{";
-  html += "    document.getElementById('testBtn').textContent=r==='playing'?'Stop Test':'Play Test';";
+  html += "    updateTestBtn(r==='playing');";
   html += "  });";
   html += "}";
 
@@ -1660,7 +1732,9 @@ String clockHomePage()
   html += "  const v=document.getElementById('volSlider').value;";
   html += "  const st=document.getElementById('alarmStatus');";
   html += "  fetch('/alarm/set?time='+encodeURIComponent(t)+'&on='+on+'&sound='+encodeURIComponent(s)+'&vol='+v)";
-  html += "    .then(r=>r.text()).then(r=>{st.textContent=on?'Armed':'Off';});";
+  html += "    .then(r=>r.text()).then(r=>{st.textContent=on?'Armed':'Off';";
+  html += "      fetch('/alarm/testStatus').then(r=>r.text()).then(r=>{updateTestBtn(r==='playing');});";
+  html += "    });";
   html += "}";
   html += "</script>";
 
@@ -1954,16 +2028,21 @@ void setupSettingsEndpoints()
       }
     }
     if (r->hasParam("sound")) {
-      alarmSound = r->getParam("sound")->value();
+      String newSound = r->getParam("sound")->value();
+      if (newSound != alarmSound) {
+        alarmSound = newSound;
+        // Stop test if playing a different song now (handled by main loop)
+        if (testPlaying) audioReqTestStop = true;
+      }
     }
     if (r->hasParam("vol")) {
       alarmVolume = r->getParam("vol")->value().toInt();
       if (alarmVolume < 0) alarmVolume = 0;
       if (alarmVolume > 100) alarmVolume = 100;
-      applyVolume();
+      audioReqVolume = true;
     }
     saveAlarmSettings();
-    updateAlarmLabel();
+    uiReqAlarmLabel = true;  // refresh label from main loop (LVGL not safe from async)
     r->send(200, "text/plain", "OK");
   });
 
@@ -1974,7 +2053,7 @@ void setupSettingsEndpoints()
       alarmVolume = r->getParam("v")->value().toInt();
       if (alarmVolume < 0) alarmVolume = 0;
       if (alarmVolume > 100) alarmVolume = 100;
-      applyVolume();
+      audioReqVolume = true;
       saveAlarmSettings();
     }
     r->send(200, "text/plain", String(alarmVolume));
@@ -1984,18 +2063,23 @@ void setupSettingsEndpoints()
   server.on("/alarm/test", HTTP_GET, [](AsyncWebServerRequest *r) {
     WEB_GUARD();
     if (testPlaying) {
-      stopTestSound();
+      audioReqTestStop = true;
       r->send(200, "text/plain", "stopped");
     } else {
-      startTestSound();
+      audioReqTestStart = true;
       r->send(200, "text/plain", "playing");
     }
+  });
+
+  // Alarm test status (for polling)
+  server.on("/alarm/testStatus", HTTP_GET, [](AsyncWebServerRequest *r) {
+    r->send(200, "text/plain", testPlaying ? "playing" : "stopped");
   });
 
   // Alarm dismiss
   server.on("/alarm/dismiss", HTTP_GET, [](AsyncWebServerRequest *r) {
     WEB_GUARD();
-    dismissAlarm();
+    audioReqDismiss = true;
     r->send(200, "text/plain", "OK");
   });
 
@@ -2171,6 +2255,11 @@ void setup()
   pinMode(ENC_DT, INPUT_PULLUP);
   pinMode(ENC_SW, INPUT_PULLUP);
 
+  // Init encoder state and attach interrupts for reliable quadrature decode
+  encState = (digitalRead(ENC_CLK) ? 1 : 0) | (digitalRead(ENC_DT) ? 2 : 0);
+  attachInterrupt(digitalPinToInterrupt(ENC_CLK), encoderISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_DT),  encoderISR, CHANGE);
+
   // ---- Display init ----
   pinMode(LCD_BL, OUTPUT);
   analogWrite(LCD_BL, 255);  // full brightness until settings load
@@ -2331,8 +2420,14 @@ void loop()
       if (!alarmFiring && !alarmSnoozing) encoderShortPress();
     }
 
-    // Audio processing (always runs)
+    // Audio processing (always runs — also handles async web commands)
     loopAudio();
+
+    // Handle deferred UI updates from async web handlers
+    if (uiReqAlarmLabel) {
+      uiReqAlarmLabel = false;
+      updateAlarmLabel();
+    }
 
     // Check alarm trigger
     checkAlarm();
