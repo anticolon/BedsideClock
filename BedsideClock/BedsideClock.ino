@@ -1553,18 +1553,85 @@ String settingsPage()
 String otaPage()
 {
   String html;
-  html.reserve(2000);
+  html.reserve(3500);
   html += "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
   html += "<title>Firmware Update</title><style>";
   html += FPSTR(CSS);
+  html += ".progress{width:100%;height:10px;background:#333;border-radius:5px;margin:12px 0;display:none;}";
+  html += ".progress-bar{height:100%;background:#007bff;border-radius:5px;width:0%;transition:width 0.2s;}";
+  html += ".status{color:#aaa;font-size:14px;margin:10px 0;min-height:20px;}";
   html += "</style></head><body><div class='box'>";
   html += "<h2>Firmware OTA Update</h2>";
-  html += "<form method='POST' action='/doUpdate' enctype='multipart/form-data'>";
-  html += "<input type='file' name='update' accept='.bin' required>";
-  html += "<button class='btnBlue' type='submit'>Upload Firmware</button></form>";
+  html += "<p style='color:#555;font-size:13px;'>Current: v" + String(FW_VERSION) + "</p>";
+  html += "<input type='file' id='fwFile' accept='.bin'>";
+  html += "<div class='progress' id='prog'><div class='progress-bar' id='progBar'></div></div>";
+  html += "<p class='status' id='status'></p>";
+  html += "<button class='btnBlue' id='upBtn' onclick='doOTA()'>Upload Firmware</button>";
   html += "<hr style='border:0;border-top:1px solid #333;margin:20px 0;'>";
   html += "<div class='nav'><a href='/'>Home</a> | <a href='/settings'>Location</a></div>";
-  html += "</div></body></html>";
+  html += "</div>";
+
+  html += "<script>";
+  html += "function doOTA(){";
+  html += "  var f=document.getElementById('fwFile').files[0];";
+  html += "  if(!f){alert('Select a .bin file first');return;}";
+  html += "  var btn=document.getElementById('upBtn');";
+  html += "  var prog=document.getElementById('prog');";
+  html += "  var bar=document.getElementById('progBar');";
+  html += "  var stat=document.getElementById('status');";
+  html += "  btn.disabled=true;btn.textContent='Uploading...';";
+  html += "  prog.style.display='block';bar.style.width='0%';";
+  html += "  stat.textContent='Uploading firmware...';stat.style.color='#7cf';";
+  html += "  var xhr=new XMLHttpRequest();";
+  html += "  xhr.open('POST','/doUpdate',true);";
+  html += "  xhr.upload.onprogress=function(e){";
+  html += "    if(e.lengthComputable){var p=Math.round(e.loaded*100/e.total);bar.style.width=p+'%';}";
+  html += "  };";
+  html += "  xhr.onload=function(){";
+  html += "    if(xhr.status==200&&xhr.responseText==='OK'){";
+  html += "      bar.style.width='100%';bar.style.background='#28a745';";
+  html += "      stat.textContent='Update complete! Waiting for reboot...';stat.style.color='#28a745';";
+  html += "      btn.textContent='Rebooting...';";
+  html += "      waitForReboot();";
+  html += "    }else{";
+  html += "      stat.textContent='Update failed: '+(xhr.responseText||'Unknown error');stat.style.color='#c0392b';";
+  html += "      bar.style.background='#c0392b';";
+  html += "      btn.disabled=false;btn.textContent='Upload Firmware';";
+  html += "    }";
+  html += "  };";
+  html += "  xhr.onerror=function(){";
+  html += "    stat.textContent='Connection lost — device may be rebooting...';stat.style.color='#FFcc44';";
+  html += "    btn.textContent='Rebooting...';";
+  html += "    waitForReboot();";
+  html += "  };";
+  html += "  var fd=new FormData();fd.append('update',f);xhr.send(fd);";
+  html += "}";
+
+  html += "function waitForReboot(){";
+  html += "  var stat=document.getElementById('status');";
+  html += "  var dots=0;";
+  html += "  var iv=setInterval(()=>{";
+  html += "    dots=(dots+1)%4;";
+  html += "    stat.textContent='Waiting for reboot'+'.'.repeat(dots);";
+  html += "  },500);";
+  html += "  var attempts=0;";
+  html += "  setTimeout(()=>{";
+  html += "    var check=setInterval(()=>{";
+  html += "      attempts++;";
+  html += "      var c=new AbortController();";
+  html += "      var t=setTimeout(()=>c.abort(),3000);";
+  html += "      fetch('/brightness',{signal:c.signal,cache:'no-store'}).then(r=>{";
+  html += "        clearTimeout(t);";
+  html += "        if(r.ok){clearInterval(check);clearInterval(iv);window.location.replace('/');}";
+  html += "      }).catch(()=>{clearTimeout(t);});";
+  html += "      if(attempts>30){clearInterval(check);clearInterval(iv);";
+  html += "        stat.textContent='Device not responding. Try refreshing manually.';stat.style.color='#c0392b';}";
+  html += "    },3000);";
+  html += "  },5000);";
+  html += "}";
+  html += "</script>";
+
+  html += "</body></html>";
   return html;
 }
 
@@ -1792,11 +1859,7 @@ void setupOTAEndpoints()
   server.on("/doUpdate", HTTP_POST,
     [](AsyncWebServerRequest *r) {
       bool ok = !Update.hasError();
-      String h = "<!DOCTYPE html><html><body style='font-family:Arial;text-align:center;padding:40px;background:#111;color:#eee;'>";
-      h += ok ? "<h2 style='color:#28a745;'>Update Success</h2><p>Rebooting...</p>"
-              : "<h2 style='color:#c0392b;'>Update Failed</h2>";
-      h += "</body></html>";
-      r->send(200, "text/html", h);
+      r->send(200, "text/plain", ok ? "OK" : "FAIL");
       if (ok) { delay(1500); ESP.restart(); }
     },
     [](AsyncWebServerRequest *r, String filename, size_t index, uint8_t *data, size_t len, bool final) {
