@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.0.3"
+#define FW_VERSION "1.0.4"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -443,6 +443,13 @@ void rescanMP3Files() {
     root.close();
   }
   Serial.printf("Rescan: found %d MP3 files\n", mp3FileCount);
+
+  // If no alarm sound is selected (or selected file was deleted), auto-select the first one
+  if (mp3FileCount > 0 && (alarmSound.length() == 0 || !SD.exists(alarmSound.c_str()))) {
+    alarmSound = mp3Files[0];
+    saveAlarmSettings();
+    Serial.printf("Auto-selected alarm sound: %s\n", alarmSound.c_str());
+  }
 }
 
 void initSDCard() {
@@ -1892,6 +1899,25 @@ void setupCaptiveProbeEndpoints()
 // ==========================================================================
 //  File Manager Page
 // ==========================================================================
+// Escape a string for safe embedding inside an HTML attribute (e.g. onclick="...")
+// Handles &, <, >, ", and ' so filenames with special chars don't break the page.
+String htmlAttrEscape(const String &s) {
+  String out;
+  out.reserve(s.length() + 16);
+  for (unsigned int i = 0; i < s.length(); i++) {
+    char c = s.charAt(i);
+    switch (c) {
+      case '&':  out += "&amp;";  break;
+      case '\'': out += "&#39;";  break;
+      case '"':  out += "&quot;"; break;
+      case '<':  out += "&lt;";   break;
+      case '>':  out += "&gt;";   break;
+      default:   out += c;        break;
+    }
+  }
+  return out;
+}
+
 String fileManagerPage() {
   String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
   html += "<title>Sound Files</title>";
@@ -1954,11 +1980,13 @@ String fileManagerPage() {
       String displayName = fname;
       if (displayName.startsWith("/")) displayName = displayName.substring(1);
 
+      String safeName = htmlAttrEscape(displayName);
+
       html += "<div class='file-row'>";
-      html += "<span class='file-name" + String(isActive ? " active" : "") + "'>" + displayName + "</span>";
+      html += "<span class='file-name" + String(isActive ? " active" : "") + "'>" + safeName + "</span>";
       html += "<span class='file-size'>" + sizeStr + "</span>";
-      html += "<a class='btn-dl' href='#' onclick=\"dlFile('" + displayName + "');return false;\">Download</a>";
-      html += "<button class='btn-del' onclick=\"delFile('" + displayName + "')\">Delete</button>";
+      html += "<a class='btn-dl' href='#' onclick=\"dlFile('" + safeName + "');return false;\">Download</a>";
+      html += "<button class='btn-del' onclick=\"delFile('" + safeName + "')\">Delete</button>";
       html += "</div>";
     }
   }
@@ -1968,6 +1996,7 @@ String fileManagerPage() {
     uint64_t total = SD.totalBytes();
     uint64_t used = SD.usedBytes();
     html += "<p style='color:#555;font-size:12px;margin-top:12px;'>SD: " + String((int)(used/1048576)) + " MB used / " + String((int)(total/1048576)) + " MB total</p>";
+    html += "<button style='background:#c0392b;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;margin-top:4px;' onclick=\"wipeCard()\">Wipe SD Card</button>";
   }
 
   html += "<div class='nav'><a href='/'>Back to Clock</a></div>";
@@ -2039,6 +2068,19 @@ String fileManagerPage() {
   html += "  };";
   html += "  xhr.onerror=function(){alert('Delete request failed');};";
   html += "  xhr.send('f='+encodeURIComponent(name));";
+  html += "}";
+
+  html += "function wipeCard(){";
+  html += "  if(!confirm('Delete ALL MP3 files from the SD card?'))return;";
+  html += "  if(!confirm('Are you sure? This cannot be undone.'))return;";
+  html += "  var xhr=new XMLHttpRequest();";
+  html += "  xhr.open('POST','/files/wipe',true);";
+  html += "  xhr.onload=function(){";
+  html += "    if(xhr.status==200){location.reload();}";
+  html += "    else{alert('Wipe failed: '+xhr.responseText);}";
+  html += "  };";
+  html += "  xhr.onerror=function(){alert('Wipe request failed');};";
+  html += "  xhr.send();";
   html += "}";
   html += "</script>";
 
@@ -2284,6 +2326,46 @@ void setupSettingsEndpoints()
       Serial.printf("File not found: %s\n", fname.c_str());
       r->send(404, "text/plain", "File not found: " + fname);
     }
+  });
+
+  // Wipe all MP3 files from SD card
+  server.on("/files/wipe", HTTP_POST, [](AsyncWebServerRequest *r) {
+    WEB_GUARD();
+    if (!sdCardOk) { r->send(500, "text/plain", "No SD card"); return; }
+    Serial.println("Wipe SD card requested");
+    int deleted = 0, failed = 0;
+    File root = SD.open("/");
+    if (!root) { r->send(500, "text/plain", "Cannot open SD root"); return; }
+    // Collect filenames first (deleting while iterating can cause issues)
+    String toDelete[64];
+    int count = 0;
+    File entry = root.openNextFile();
+    while (entry && count < 64) {
+      if (!entry.isDirectory()) {
+        String name = String(entry.name());
+        if (!name.startsWith("/")) name = "/" + name;
+        toDelete[count++] = name;
+      }
+      entry = root.openNextFile();
+    }
+    root.close();
+    // Now delete them
+    for (int i = 0; i < count; i++) {
+      if (SD.remove(toDelete[i].c_str())) {
+        Serial.printf("Wiped: %s\n", toDelete[i].c_str());
+        deleted++;
+      } else {
+        Serial.printf("Wipe failed: %s\n", toDelete[i].c_str());
+        failed++;
+      }
+    }
+    // Clear alarm sound since all files are gone
+    alarmSound = "";
+    saveAlarmSettings();
+    rescanMP3Files();
+    String msg = "Deleted " + String(deleted) + " files";
+    if (failed > 0) msg += ", " + String(failed) + " failed";
+    r->send(200, "text/plain", msg);
   });
 }
 
