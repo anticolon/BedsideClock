@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.0.4"
+#define FW_VERSION "1.0.5"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -213,6 +213,7 @@ volatile bool audioReqTestStop  = false;
 volatile bool audioReqDismiss   = false;
 volatile bool audioReqVolume    = false;  // apply volume change from main loop
 volatile bool uiReqAlarmLabel   = false;  // request alarm label refresh from main loop
+volatile bool uploadInProgress  = false;  // true while receiving file upload chunks
 
 // ==========================================================================
 //  Alarm settings (saved in Preferences)
@@ -1035,6 +1036,12 @@ void menuHandleInput() {
 // ==========================================================================
 static void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
 {
+  // Skip display SPI transfer during file upload to avoid SPI bus contention
+  // (LCD and SD card share the same SPI bus)
+  if (uploadInProgress) {
+    lv_disp_flush_ready(disp);
+    return;
+  }
   uint32_t w = area->x2 - area->x1 + 1;
   uint32_t h = area->y2 - area->y1 + 1;
 #if LV_COLOR_16_SWAP
@@ -2015,19 +2022,35 @@ String fileManagerPage() {
   html += "  btn.disabled=true;btn.textContent='Uploading...';";
   html += "  prog.style.display='block';bar.style.width='0%';";
   html += "  stat.textContent='';";
-  html += "  var xhr=new XMLHttpRequest();";
-  html += "  xhr.open('POST','/files/upload',true);";
-  html += "  xhr.upload.onprogress=function(e){";
-  html += "    if(e.lengthComputable){var p=Math.round(e.loaded*100/e.total);bar.style.width=p+'%';}";
-  html += "  };";
-  html += "  xhr.onload=function(){";
-  html += "    if(xhr.status==200){stat.textContent='Upload complete!';stat.style.color='#27ae60';";
-  html += "      setTimeout(function(){location.reload();},500);";
-  html += "    }else{stat.textContent='Error: '+xhr.responseText;stat.style.color='#c0392b';}";
-  html += "    btn.disabled=false;btn.textContent='Upload';";
-  html += "  };";
-  html += "  xhr.onerror=function(){stat.textContent='Upload failed';stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';};";
-  html += "  var fd=new FormData();fd.append('file',f);xhr.send(fd);";
+  // Chunked upload: send file in 8KB pieces via sequential POST requests
+  html += "  var CHUNK=8192;";
+  html += "  var offset=0;";
+  html += "  var total=f.size;";
+  html += "  function sendChunk(){";
+  html += "    var end=Math.min(offset+CHUNK,total);";
+  html += "    var blob=f.slice(offset,end);";
+  html += "    var xhr=new XMLHttpRequest();";
+  html += "    xhr.open('POST','/files/upload_chunk',true);";
+  html += "    xhr.setRequestHeader('X-Filename',encodeURIComponent(f.name));";
+  html += "    xhr.setRequestHeader('X-Offset',offset);";
+  html += "    xhr.setRequestHeader('X-Total',total);";
+  html += "    xhr.setRequestHeader('Content-Type','application/octet-stream');";
+  html += "    xhr.onload=function(){";
+  html += "      if(xhr.status!=200){stat.textContent='Error: '+xhr.responseText;stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';return;}";
+  html += "      offset=end;";
+  html += "      var pct=Math.round(offset*100/total);";
+  html += "      bar.style.width=pct+'%';";
+  html += "      if(offset>=total){";
+  html += "        stat.textContent='Upload complete!';stat.style.color='#27ae60';";
+  html += "        setTimeout(function(){location.reload();},500);";
+  html += "      }else{";
+  html += "        sendChunk();";
+  html += "      }";
+  html += "    };";
+  html += "    xhr.onerror=function(){stat.textContent='Upload failed';stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';};";
+  html += "    xhr.send(blob);";
+  html += "  }";
+  html += "  sendChunk();";
   html += "}";
 
   html += "function dlFile(name){";
@@ -2263,37 +2286,84 @@ void setupSettingsEndpoints()
     r->send(resp);
   });
 
-  // File upload
-  static String uploadFilename;
+  // Chunked file upload — receives raw binary chunks with metadata in headers
   static File uploadFile;
+  static String uploadFilename;
 
-  server.on("/files/upload", HTTP_POST,
-    // Request complete handler
+  server.on("/files/upload_chunk", HTTP_POST,
     [](AsyncWebServerRequest *r) {
-      WEB_GUARD();
-      rescanMP3Files();
+      // This handler fires after the body has been received
+      // (actual work is done in onBody below)
       r->send(200, "text/plain", "OK");
     },
-    // File upload handler (called per chunk)
-    [](AsyncWebServerRequest *r, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+    NULL,  // no multipart upload handler
+    // Body handler — receives raw POST body
+    [](AsyncWebServerRequest *r, uint8_t *data, size_t len, size_t index, size_t total) {
       if (!webEnabled || !sdCardOk) return;
+
+      // First body callback for this request — read headers and open/append file
       if (index == 0) {
-        // First chunk — open file
-        uploadFilename = "/" + filename;
-        Serial.printf("Upload start: %s\n", uploadFilename.c_str());
-        uploadFile = SD.open(uploadFilename, FILE_WRITE);
-        if (!uploadFile) {
-          Serial.println("Failed to open file for writing");
-          return;
+        size_t offset = r->hasHeader("X-Offset") ? r->getHeader("X-Offset")->value().toInt() : 0;
+        size_t fileTotal = r->hasHeader("X-Total") ? r->getHeader("X-Total")->value().toInt() : 0;
+        String fname = r->hasHeader("X-Filename") ? r->getHeader("X-Filename")->value() : "";
+
+        // URL-decode the filename
+        String decoded;
+        for (unsigned int i = 0; i < fname.length(); i++) {
+          if (fname[i] == '%' && i + 2 < fname.length()) {
+            char hex[3] = { fname[i+1], fname[i+2], 0 };
+            decoded += (char)strtol(hex, NULL, 16);
+            i += 2;
+          } else if (fname[i] == '+') {
+            decoded += ' ';
+          } else {
+            decoded += fname[i];
+          }
+        }
+        fname = decoded;
+
+        if (offset == 0) {
+          // First chunk — create new file
+          uploadFilename = "/" + fname;
+          uploadInProgress = true;
+          Serial.printf("Chunked upload start: %s (%u bytes total)\n", uploadFilename.c_str(), fileTotal);
+          uploadFile = SD.open(uploadFilename, FILE_WRITE);
+          if (!uploadFile) {
+            Serial.println("Failed to open file for writing");
+            return;
+          }
+        } else if (!uploadFile) {
+          // Subsequent chunk but file not open — try to reopen for append
+          uploadFilename = "/" + fname;
+          uploadFile = SD.open(uploadFilename, FILE_APPEND);
+          if (!uploadFile) {
+            Serial.printf("Failed to reopen file for append at offset %u\n", offset);
+            return;
+          }
         }
       }
+
+      // Write this piece of the chunk to SD
       if (uploadFile && len > 0) {
-        uploadFile.write(data, len);
+        size_t written = uploadFile.write(data, len);
+        if (written != len) {
+          Serial.printf("SD write error: wrote %u of %u bytes\n", written, len);
+        }
       }
-      if (final) {
-        if (uploadFile) {
+
+      // If this is the last body callback for this chunk request, flush
+      if (uploadFile && (index + len) == total) {
+        uploadFile.flush();
+
+        // Check if this was the final chunk of the whole file
+        size_t fileTotal = r->hasHeader("X-Total") ? r->getHeader("X-Total")->value().toInt() : 0;
+        size_t offset = r->hasHeader("X-Offset") ? r->getHeader("X-Offset")->value().toInt() : 0;
+        if (offset + total >= fileTotal) {
+          // Last chunk — close file and finish
           uploadFile.close();
-          Serial.printf("Upload complete: %s (%u bytes)\n", uploadFilename.c_str(), index + len);
+          uploadInProgress = false;
+          rescanMP3Files();
+          Serial.printf("Chunked upload complete: %s\n", uploadFilename.c_str());
         }
       }
     }
@@ -2649,8 +2719,8 @@ void loop()
     // Check snooze expiry
     checkSnooze();
 
-    // Periodic weather refresh
-    if (millis() - lastWeatherFetch > WEATHER_INTERVAL_MS) {
+    // Periodic weather refresh (skip during file upload to avoid SD/network contention)
+    if (!uploadInProgress && millis() - lastWeatherFetch > WEATHER_INTERVAL_MS) {
       fetchWeather();
       update_weather_display();
     }
