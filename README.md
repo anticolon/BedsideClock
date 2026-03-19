@@ -344,16 +344,6 @@ The same message persists through snooze cycles — a fresh random pick happens 
 - **SD card wipe** — Added "Wipe SD Card" button to file manager with double confirmation. Removes all files from SD root and clears alarm sound setting
 - **Auto-select alarm sound** — `rescanMP3Files()` now automatically selects the first MP3 as alarm sound when no sound is currently set or the selected file no longer exists
 
-### v1.0.5
-- **Fix truncated MP3 uploads** caused by SPI bus contention — replaced single multipart upload with chunked 8KB sequential uploads. The JS client slices files into 8KB blobs and sends them as individual POST requests to `/files/upload_chunk`, with filename, offset, and total size in HTTP headers. First chunk creates the file, subsequent chunks append. Fixes large MP3 files (4MB+) being truncated to ~500–800KB
-- **Skip LVGL display flush during upload** — LCD and SD card share the same SPI bus; concurrent display writes were colliding with SD card writes, corrupting upload data. Display freezes briefly during upload and resumes automatically when complete
-- **Skip weather fetch during upload** to avoid blocking network/SPI
-
-### v1.0.4
-- **Fix special character filenames** — added `htmlAttrEscape()` helper to properly escape filenames containing `&`, `'`, `"`, `<`, `>` in the file manager web UI. Fixes songs with special characters being unplayable and undeletable
-- **SD card wipe** — added "Wipe SD Card" button to file manager with double confirmation. Removes all files from SD root and clears alarm sound setting
-- **Auto-select alarm sound** — `rescanMP3Files()` now automatically selects the first MP3 as alarm sound when no sound is currently set or the selected file no longer exists
-
 ### v1.0.3
 - **OTA firmware update overhaul** — JS-based upload with progress bar, automatic reboot detection and redirect to home page
 - **MP3 file download** — Added `/dl` endpoint with chunked SD card file serving and live progress percentage on the download button
@@ -382,8 +372,6 @@ This project is licensed under the [Creative Commons Attribution-NonCommercial 4
 You are free to use, modify, and share this work for personal, non-commercial purposes, provided you give appropriate credit. Commercial use is not permitted without prior written permission.
 
 Commercial use — including selling devices, kits, or services based on this project — is prohibited without prior written permission from the author.
-
-THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. USE AT YOUR OWN RISK.
 
 THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. USE AT YOUR OWN RISK.
 
