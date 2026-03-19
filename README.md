@@ -5,7 +5,7 @@ A feature-rich bedside clock built on the Waveshare ESP32-C6 development board w
 ![ESP32-C6](https://img.shields.io/badge/ESP32--C6-RISC--V-blue)
 ![Arduino](https://img.shields.io/badge/Arduino-IDE-teal)
 ![LVGL](https://img.shields.io/badge/LVGL-8.4-green)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
 ---
 
@@ -377,9 +377,13 @@ The same message persists through snooze cycles — a fresh random pick happens 
 
 ## License
 
-This project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
+This project is licensed under the [Creative Commons Attribution-NonCommercial 4.0 International License](https://creativecommons.org/licenses/by-nc/4.0/).
 
-You are free to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of this software, subject to the conditions of the MIT License.
+You are free to use, modify, and share this work for personal, non-commercial purposes, provided you give appropriate credit. Commercial use is not permitted without prior written permission.
+
+Commercial use — including selling devices, kits, or services based on this project — is prohibited without prior written permission from the author.
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. USE AT YOUR OWN RISK.
 
 THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. USE AT YOUR OWN RISK.
 
