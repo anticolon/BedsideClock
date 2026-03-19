@@ -5,7 +5,7 @@ A feature-rich bedside clock built on the Waveshare ESP32-C6 development board w
 ![ESP32-C6](https://img.shields.io/badge/ESP32--C6-RISC--V-blue)
 ![Arduino](https://img.shields.io/badge/Arduino-IDE-teal)
 ![LVGL](https://img.shields.io/badge/LVGL-8.4-green)
-[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
 
@@ -72,7 +72,7 @@ A full settings menu accessible by holding the encoder button for 1 second:
 A responsive, dark-themed web interface accessible from any device on the same network:
 
 - **Home page** — Set alarm time (24h format dropdowns), toggle alarm on/off, select alarm sound, adjust volume with slider, test playback, adjust display brightness
-- **Manage Sound Files** — Upload new MP3 files to the SD card with a progress bar, download files with live progress on the button, view file list with file sizes, delete unwanted files, see SD card usage statistics
+- **Manage Sound Files** — Upload new MP3 files to the SD card with a progress bar, download files with live progress on the button, view file list with file sizes, delete unwanted files, wipe entire SD card with double confirmation, see SD card usage statistics
 - **Location Settings** — Search for your city using the Open-Meteo Geocoding API, timezone is set automatically
 - **Firmware Update** — OTA (Over-The-Air) firmware updates with upload progress bar, automatic reboot detection, and redirect to home page when the device comes back online
 - **Web access control** — Enable/disable the entire web interface from the on-screen menu to prevent unauthorized access. When disabled, all endpoints return `403 Forbidden`. OTA updates and the AP config portal remain accessible for recovery.
@@ -92,6 +92,8 @@ A responsive, dark-themed web interface accessible from any device on the same n
 - Files are automatically rescanned on boot and after every upload or delete
 - If the active alarm sound is deleted, the alarm sound setting is automatically cleared
 - Supports up to 32 MP3 files in the root directory of the SD card
+- Wipe SD Card button with double confirmation to remove all files and reset alarm sound
+- Auto-selects the first available MP3 as alarm sound when no sound is set or the active file is missing
 
 ---
 
@@ -291,6 +293,7 @@ Navigate to the clock's IP → **Manage Sound Files** to:
 - **Upload** new MP3 files with a visual progress bar
 - **Download** files from the SD card with live progress on the button
 - **Delete** files you no longer want
+- **Wipe SD Card** to remove all files with double confirmation
 - See file sizes and total SD card usage
 - The currently active alarm sound is highlighted in gold
 
@@ -331,6 +334,26 @@ The same message persists through snooze cycles — a fresh random pick happens 
 
 ## Changelog
 
+### v1.0.5
+- **Fix truncated MP3 uploads** — Replaced single multipart upload with chunked 8KB sequential uploads. The JS client slices files into 8KB blobs and sends them as individual POST requests to `/files/upload_chunk`, with filename, offset, and total size in HTTP headers. First chunk creates the file, subsequent chunks append. Fixes large MP3 files (4MB+) being truncated to ~500–800KB
+- **Skip display flush during upload** — LCD and SD card share the same SPI bus; concurrent display writes were colliding with SD card writes, corrupting upload data. Display freezes briefly during upload and resumes automatically when complete
+- **Skip weather fetch during upload** — Prevents blocking network/SPI during file transfers
+
+### v1.0.4
+- **Fix special character filenames** — Added `htmlAttrEscape()` helper to properly escape filenames containing `&`, `'`, `"`, `<`, `>` in the file manager web UI. Fixes songs with special characters being unplayable and undeletable
+- **SD card wipe** — Added "Wipe SD Card" button to file manager with double confirmation. Removes all files from SD root and clears alarm sound setting
+- **Auto-select alarm sound** — `rescanMP3Files()` now automatically selects the first MP3 as alarm sound when no sound is currently set or the selected file no longer exists
+
+### v1.0.5
+- **Fix truncated MP3 uploads** caused by SPI bus contention — replaced single multipart upload with chunked 8KB sequential uploads. The JS client slices files into 8KB blobs and sends them as individual POST requests to `/files/upload_chunk`, with filename, offset, and total size in HTTP headers. First chunk creates the file, subsequent chunks append. Fixes large MP3 files (4MB+) being truncated to ~500–800KB
+- **Skip LVGL display flush during upload** — LCD and SD card share the same SPI bus; concurrent display writes were colliding with SD card writes, corrupting upload data. Display freezes briefly during upload and resumes automatically when complete
+- **Skip weather fetch during upload** to avoid blocking network/SPI
+
+### v1.0.4
+- **Fix special character filenames** — added `htmlAttrEscape()` helper to properly escape filenames containing `&`, `'`, `"`, `<`, `>` in the file manager web UI. Fixes songs with special characters being unplayable and undeletable
+- **SD card wipe** — added "Wipe SD Card" button to file manager with double confirmation. Removes all files from SD root and clears alarm sound setting
+- **Auto-select alarm sound** — `rescanMP3Files()` now automatically selects the first MP3 as alarm sound when no sound is currently set or the selected file no longer exists
+
 ### v1.0.3
 - **OTA firmware update overhaul** — JS-based upload with progress bar, automatic reboot detection and redirect to home page
 - **MP3 file download** — Added `/dl` endpoint with chunked SD card file serving and live progress percentage on the download button
@@ -354,11 +377,9 @@ The same message persists through snooze cycles — a fresh random pick happens 
 
 ## License
 
-This project is licensed under the [Creative Commons Attribution-NonCommercial 4.0 International License](https://creativecommons.org/licenses/by-nc/4.0/).
+This project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
 
-You are free to use, modify, and share this work for personal, non-commercial purposes, provided you give appropriate credit. Commercial use is not permitted without prior written permission.
-
-Commercial use — including selling devices, kits, or services based on this project — is prohibited without prior written permission from the author.
+You are free to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of this software, subject to the conditions of the MIT License.
 
 THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. USE AT YOUR OWN RISK.
 
