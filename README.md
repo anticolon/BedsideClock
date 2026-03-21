@@ -110,6 +110,10 @@ A responsive, dark-themed web interface accessible from any device on the same n
 | MicroSD Card | FAT32 formatted, for alarm MP3 files | [Amazon.se](https://www.amazon.se/dp/B0054KHY8C?tag=kldesign-21) · [Amazon.com](https://www.amazon.com/dp/B07JH48HBL?tag=kldesign00-20) |
 | Speaker | Connected to MAX98357 output terminals | [Amazon.se](https://www.amazon.se/dp/B09PL6XFHB?tag=kldesign-21) · [Amazon.com](https://www.amazon.com/dp/B0F9NZZFRH?tag=kldesign00-20) |
 
+### Wiring Diagram
+
+![Bedside Clock Wiring Diagram](BedsideClockDiagram.png)
+
 ### Pinout
 
 The display and SD card are integrated on the Waveshare board with fixed pin assignments. The following pins are used for external components:
