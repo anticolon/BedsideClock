@@ -99,14 +99,16 @@ A responsive, dark-themed web interface accessible from any device on the same n
 
 ## Hardware
 
+> **Support this project:** The product links below are affiliate links. If you purchase through them, I earn a small commission at no extra cost to you — it's a simple way to help fund continued development. Thank you!
+
 ### Components
-| Component | Description |
-|-----------|-------------|
-| Waveshare ESP32-C6 1.47" LCD | All-in-one dev board: ESP32-C6 (RISC-V, WiFi 6, BLE 5), 320×172 ST7789 display, and onboard SD card slot |
-| MAX98357 | I2S mono amplifier for audio output |
-| EC11 Rotary Encoder | 7-pin, with push button for navigation |
-| MicroSD Card | FAT32 formatted, for alarm MP3 files |
-| Speaker | Connected to MAX98357 output terminals |
+| Component | Description | Link |
+|-----------|-------------|------|
+| Waveshare ESP32-C6 1.47" LCD | All-in-one dev board: ESP32-C6 (RISC-V, WiFi 6, BLE 5), 320×172 ST7789 display, and onboard SD card slot | [Amazon.se](https://www.amazon.se/dp/B0FC6JTRYT?tag=kldesign-21) · [Amazon.com](https://www.amazon.com/dp/B0F4DDDQSM?tag=kldesign00-20) |
+| MAX98357 | I2S mono amplifier for audio output | [Amazon.se](https://www.amazon.se/dp/B09PL7DSK5?tag=kldesign-21) · [Amazon.com](https://www.amazon.com/dp/B0DPJRLMDJ?tag=kldesign00-20) |
+| EC11 Rotary Encoder | 7-pin, with push button for navigation | [Amazon.se](https://www.amazon.se/dp/B07RM2JCJQ?tag=kldesign-21) · [Amazon.com](https://www.amazon.com/dp/B0BP6G8D7B?tag=kldesign00-20) |
+| MicroSD Card | FAT32 formatted, for alarm MP3 files | [Amazon.se](https://www.amazon.se/dp/B0054KHY8C?tag=kldesign-21) · [Amazon.com](https://www.amazon.com/dp/B07JH48HBL?tag=kldesign00-20) |
+| Speaker | Connected to MAX98357 output terminals | [Amazon.se](https://www.amazon.se/dp/B09PL6XFHB?tag=kldesign-21) · [Amazon.com](https://www.amazon.com/dp/B0F9NZZFRH?tag=kldesign00-20) |
 
 ### Pinout
 
