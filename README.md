@@ -7,9 +7,11 @@ A feature-rich bedside clock built on the Waveshare ESP32-C6 development board w
 ![LVGL](https://img.shields.io/badge/LVGL-8.4-green)
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
-Find the 3D-printable enclosure here: <https://makerworld.com/en/models/2580834-bedside-clock>
+Find the 3D-printable model files here: <https://makerworld.com/en/models/2580834-bedside-clock>
 
 > **By K.L Design**
+
+<img src="bedside_clock_promo.jpg" alt="Bedside Clock" width="1000">
 
 ---
 
