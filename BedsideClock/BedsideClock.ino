@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.0.5"
+#define FW_VERSION "1.0.8"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -214,6 +214,7 @@ volatile bool audioReqDismiss   = false;
 volatile bool audioReqVolume    = false;  // apply volume change from main loop
 volatile bool uiReqAlarmLabel   = false;  // request alarm label refresh from main loop
 volatile bool uploadInProgress  = false;  // true while receiving file upload chunks
+volatile bool uploadError       = false;  // set on SD write failure during upload
 
 // ==========================================================================
 //  Alarm settings (saved in Preferences)
@@ -2022,21 +2023,39 @@ String fileManagerPage() {
   html += "  btn.disabled=true;btn.textContent='Uploading...';";
   html += "  prog.style.display='block';bar.style.width='0%';";
   html += "  stat.textContent='';";
-  // Chunked upload: send file in 8KB pieces via sequential POST requests
-  html += "  var CHUNK=8192;";
+  // Chunked upload: send file in 32KB pieces via sequential POST requests
+  // Each chunk retries up to 3 times on failure before aborting
+  html += "  var CHUNK=32768;";
   html += "  var offset=0;";
   html += "  var total=f.size;";
+  html += "  var retries=0;";
+  html += "  var maxRetries=3;";
+  html += "  function abortUpload(msg){";
+  html += "    stat.textContent=msg;stat.style.color='#c0392b';";
+  html += "    btn.disabled=false;btn.textContent='Upload';";
+  html += "    var ax=new XMLHttpRequest();ax.open('POST','/files/upload_abort',true);ax.send();";
+  html += "  }";
   html += "  function sendChunk(){";
   html += "    var end=Math.min(offset+CHUNK,total);";
   html += "    var blob=f.slice(offset,end);";
   html += "    var xhr=new XMLHttpRequest();";
   html += "    xhr.open('POST','/files/upload_chunk',true);";
+  html += "    xhr.timeout=30000;";
   html += "    xhr.setRequestHeader('X-Filename',encodeURIComponent(f.name));";
   html += "    xhr.setRequestHeader('X-Offset',offset);";
   html += "    xhr.setRequestHeader('X-Total',total);";
   html += "    xhr.setRequestHeader('Content-Type','application/octet-stream');";
   html += "    xhr.onload=function(){";
-  html += "      if(xhr.status!=200){stat.textContent='Error: '+xhr.responseText;stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';return;}";
+  html += "      if(xhr.status!=200){";
+  html += "        retries++;";
+  html += "        if(retries<=maxRetries){";
+  html += "          stat.textContent='Write error, retry '+retries+'/'+maxRetries+'...';stat.style.color='#FFcc44';";
+  html += "          setTimeout(sendChunk,1000);";
+  html += "          return;";
+  html += "        }";
+  html += "        abortUpload('Upload failed after '+maxRetries+' retries');return;";
+  html += "      }";
+  html += "      retries=0;";
   html += "      offset=end;";
   html += "      var pct=Math.round(offset*100/total);";
   html += "      bar.style.width=pct+'%';";
@@ -2044,10 +2063,19 @@ String fileManagerPage() {
   html += "        stat.textContent='Upload complete!';stat.style.color='#27ae60';";
   html += "        setTimeout(function(){location.reload();},500);";
   html += "      }else{";
-  html += "        sendChunk();";
+  html += "        setTimeout(sendChunk,50);";
   html += "      }";
   html += "    };";
-  html += "    xhr.onerror=function(){stat.textContent='Upload failed';stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';};";
+  html += "    xhr.ontimeout=function(){";
+  html += "      retries++;";
+  html += "      if(retries<=maxRetries){stat.textContent='Timeout, retry '+retries+'/'+maxRetries+'...';stat.style.color='#FFcc44';setTimeout(sendChunk,1000);return;}";
+  html += "      abortUpload('Upload timed out after '+maxRetries+' retries');";
+  html += "    };";
+  html += "    xhr.onerror=function(){";
+  html += "      retries++;";
+  html += "      if(retries<=maxRetries){stat.textContent='Error, retry '+retries+'/'+maxRetries+'...';stat.style.color='#FFcc44';setTimeout(sendChunk,1000);return;}";
+  html += "      abortUpload('Upload failed after '+maxRetries+' retries');";
+  html += "    };";
   html += "    xhr.send(blob);";
   html += "  }";
   html += "  sendChunk();";
@@ -2287,21 +2315,33 @@ void setupSettingsEndpoints()
   });
 
   // Chunked file upload — receives raw binary chunks with metadata in headers
-  static File uploadFile;
+  // Architecture: each chunk request opens the file, writes, and closes it.
+  // This avoids holding a file handle open across HTTP requests, which caused
+  // SPI bus contention with the LCD (shared SPI bus) between chunks.
   static String uploadFilename;
+  static size_t uploadBytesWritten;  // track actual bytes written to SD
 
   server.on("/files/upload_chunk", HTTP_POST,
     [](AsyncWebServerRequest *r) {
       // This handler fires after the body has been received
-      // (actual work is done in onBody below)
-      r->send(200, "text/plain", "OK");
+      if (uploadError) {
+        uploadError = false;
+        uploadInProgress = false;
+        r->send(500, "text/plain", "SD write error");
+      } else {
+        r->send(200, "text/plain", "OK");
+      }
     },
     NULL,  // no multipart upload handler
-    // Body handler — receives raw POST body
+    // Body handler — receives raw POST body in potentially multiple callbacks
     [](AsyncWebServerRequest *r, uint8_t *data, size_t len, size_t index, size_t total) {
       if (!webEnabled || !sdCardOk) return;
+      if (uploadError) return;
 
-      // First body callback for this request — read headers and open/append file
+      // We use a local File for each request — opened on first callback, closed on last
+      static File chunkFile;
+
+      // First body callback for this HTTP request
       if (index == 0) {
         size_t offset = r->hasHeader("X-Offset") ? r->getHeader("X-Offset")->value().toInt() : 0;
         size_t fileTotal = r->hasHeader("X-Total") ? r->getHeader("X-Total")->value().toInt() : 0;
@@ -2321,53 +2361,86 @@ void setupSettingsEndpoints()
           }
         }
         fname = decoded;
+        uploadFilename = "/" + fname;
 
         if (offset == 0) {
-          // First chunk — create new file
-          uploadFilename = "/" + fname;
+          // First chunk of a new file — create/truncate
           uploadInProgress = true;
+          uploadBytesWritten = 0;
           Serial.printf("Chunked upload start: %s (%u bytes total)\n", uploadFilename.c_str(), fileTotal);
-          uploadFile = SD.open(uploadFilename, FILE_WRITE);
-          if (!uploadFile) {
-            Serial.println("Failed to open file for writing");
-            return;
-          }
-        } else if (!uploadFile) {
-          // Subsequent chunk but file not open — try to reopen for append
-          uploadFilename = "/" + fname;
-          uploadFile = SD.open(uploadFilename, FILE_APPEND);
-          if (!uploadFile) {
-            Serial.printf("Failed to reopen file for append at offset %u\n", offset);
-            return;
+          chunkFile = SD.open(uploadFilename, FILE_WRITE);
+        } else {
+          // Continuation chunk — open for append
+          chunkFile = SD.open(uploadFilename, FILE_APPEND);
+        }
+
+        if (!chunkFile) {
+          Serial.printf("Failed to open file at offset %u\n", offset);
+          uploadError = true;
+          return;
+        }
+      }
+
+      // Write this fragment to SD — retry up to 3 times on short writes
+      if (chunkFile && len > 0) {
+        uint8_t *ptr = data;
+        size_t remaining = len;
+        int retries = 0;
+        const int maxRetries = 3;
+        while (remaining > 0) {
+          size_t written = chunkFile.write(ptr, remaining);
+          if (written > 0) {
+            ptr += written;
+            remaining -= written;
+            uploadBytesWritten += written;
+            retries = 0;
+          } else {
+            retries++;
+            if (retries > maxRetries) {
+              Serial.printf("SD write failed after %d retries (%u bytes remaining)\n", maxRetries, remaining);
+              uploadError = true;
+              chunkFile.close();
+              return;
+            }
+            Serial.printf("SD write retry %d/%d (%u bytes remaining)\n", retries, maxRetries, remaining);
+            delay(10);
           }
         }
       }
 
-      // Write this piece of the chunk to SD
-      if (uploadFile && len > 0) {
-        size_t written = uploadFile.write(data, len);
-        if (written != len) {
-          Serial.printf("SD write error: wrote %u of %u bytes\n", written, len);
-        }
-      }
-
-      // If this is the last body callback for this chunk request, flush
-      if (uploadFile && (index + len) == total) {
-        uploadFile.flush();
+      // Last body callback for this HTTP request — flush and close
+      if (chunkFile && (index + len) == total) {
+        chunkFile.flush();
+        chunkFile.close();
 
         // Check if this was the final chunk of the whole file
         size_t fileTotal = r->hasHeader("X-Total") ? r->getHeader("X-Total")->value().toInt() : 0;
         size_t offset = r->hasHeader("X-Offset") ? r->getHeader("X-Offset")->value().toInt() : 0;
         if (offset + total >= fileTotal) {
-          // Last chunk — close file and finish
-          uploadFile.close();
           uploadInProgress = false;
+          Serial.printf("Chunked upload complete: %s (%u bytes written)\n", uploadFilename.c_str(), uploadBytesWritten);
+
+          if (uploadBytesWritten != fileTotal) {
+            Serial.printf("WARNING: Byte count mismatch! Expected %u, tracked %u\n", fileTotal, uploadBytesWritten);
+          }
+
           rescanMP3Files();
-          Serial.printf("Chunked upload complete: %s\n", uploadFilename.c_str());
         }
       }
     }
   );
+
+  // Upload abort — client calls this to clean up partial file on failure
+  server.on("/files/upload_abort", HTTP_POST, [](AsyncWebServerRequest *r) {
+    uploadInProgress = false;
+    uploadError = false;
+    if (uploadFilename.length() > 0 && SD.exists(uploadFilename.c_str())) {
+      SD.remove(uploadFilename.c_str());
+      Serial.printf("Upload aborted, deleted partial: %s\n", uploadFilename.c_str());
+      rescanMP3Files();
+    }
+    r->send(200, "text/plain", "OK");
+  });
 
   // File delete
   server.on("/files/delete", HTTP_POST, [](AsyncWebServerRequest *r) {
