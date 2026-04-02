@@ -293,7 +293,7 @@ If you don't want to set up the Arduino IDE and compile the firmware yourself, y
 9. After programming is complete click the **rst** button on the ESP32 board to reboot
 10. The clock should now boot up and enter AP mode for WiFi setup
 
-**Tip:** If the board doesn't show up as a COM port, hold the **BOOT** button on the Waveshare board while plugging in USB, then release after connecting. You may also need to install the [CH343 USB driver](https://www.wch-ic.com/downloads/CH343SER_ZIP.html) if your OS doesn't recognize the board.
+**Tip:** If the board doesn't show up as a COM port, hold the **BOOT** button on the Waveshare board while plugging in USB, then release after connecting.
 
 #### Updating Firmware Later
 
@@ -377,8 +377,18 @@ The same message persists through snooze cycles — a fresh random pick happens 
 
 ## Changelog
 
+### v1.0.8
+- **Reliable chunked upload** — Rewrote upload to close-per-chunk: each 32KB chunk opens, writes, flushes, and closes the file instead of holding a static file handle across 150+ HTTP requests. Fixes SPI bus contention between SD card and LCD that caused silent file truncation
+- **Error propagation** — Upload body handler now reports SD write failures to the response handler via `uploadError` flag, returning HTTP 500 instead of silent 200. Browser detects errors and stops uploading
+- **Server-side write retry** — Short writes retry up to 3 times with 10ms SPI settle delay between attempts
+- **Client-side chunk retry** — Failed or timed-out chunks retry up to 3 times with 1-second backoff; status bar shows retry progress in yellow
+- **Partial file cleanup** — Added `/files/upload_abort` endpoint; on final failure the client deletes the partial file from SD so no ghost files appear in the file list
+- **Inter-chunk pacing** — 50ms delay between chunks on the client side gives the ESP32 a clean SPI bus window between SD close and next open
+- **Chunk size increase** — Increased from 8KB to 32KB, reducing HTTP round-trips ~4x
+- **XHR timeout** — Added 30-second timeout on the client side to catch stalled requests
+
 ### v1.0.5
-- **Fix truncated MP3 uploads** — Replaced single multipart upload with chunked 8KB sequential uploads. The JS client slices files into 8KB blobs and sends them as individual POST requests to `/files/upload_chunk`, with filename, offset, and total size in HTTP headers. First chunk creates the file, subsequent chunks append. Fixes large MP3 files (4MB+) being truncated to ~500–800KB
+- **Chunked MP3 uploads** — Replaced single multipart upload with chunked sequential uploads via `/files/upload_chunk`, with filename, offset, and total size in HTTP headers. First chunk creates the file, subsequent chunks append. Fixes large MP3 files (4MB+) being truncated
 - **Skip display flush during upload** — LCD and SD card share the same SPI bus; concurrent display writes were colliding with SD card writes, corrupting upload data. Display freezes briefly during upload and resumes automatically when complete
 - **Skip weather fetch during upload** — Prevents blocking network/SPI during file transfers
 
