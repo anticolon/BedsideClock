@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.0.8"
+#define FW_VERSION "1.0.9"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -106,6 +106,50 @@
 
 // Custom 64px font for big clock digits
 LV_FONT_DECLARE(lv_font_clock_big);
+
+// ==========================================================================
+//  In-memory log ring buffer (viewable at /log)
+// ==========================================================================
+#define LOG_BUF_SIZE 8192
+static char logBuffer[LOG_BUF_SIZE];
+static size_t logPos = 0;
+static bool logWrapped = false;
+
+void logMsg(const char *fmt, ...) {
+  char tmp[256];
+  va_list args;
+  va_start(args, fmt);
+  int n = vsnprintf(tmp, sizeof(tmp), fmt, args);
+  va_end(args);
+  if (n <= 0) return;
+  if (n >= (int)sizeof(tmp)) n = sizeof(tmp) - 1;
+
+  // Write to Serial
+  Serial.print(tmp);
+
+  // Write to ring buffer
+  for (int i = 0; i < n; i++) {
+    logBuffer[logPos] = tmp[i];
+    logPos++;
+    if (logPos >= LOG_BUF_SIZE) {
+      logPos = 0;
+      logWrapped = true;
+    }
+  }
+}
+
+String getLog() {
+  String out;
+  out.reserve(LOG_BUF_SIZE + 64);
+  if (logWrapped) {
+    // Read from logPos to end, then from 0 to logPos
+    for (size_t i = logPos; i < LOG_BUF_SIZE; i++) out += logBuffer[i];
+    for (size_t i = 0; i < logPos; i++) out += logBuffer[i];
+  } else {
+    for (size_t i = 0; i < logPos; i++) out += logBuffer[i];
+  }
+  return out;
+}
 
 // ==========================================================================
 //  DEFAULTS (used if nothing saved in Preferences)
@@ -1757,7 +1801,9 @@ String clockHomePage()
   html += "<div class='nav' style='margin-top:20px;'>";
   html += "<a href='/files'>Manage Sound Files</a><br><br>";
   html += "<a href='/settings'>Location Settings</a><br><br>";
-  html += "<a href='/update'>Firmware Update</a>";
+  html += "<a href='/update'>Firmware Update</a><br><br>";
+  html += "<a href='/syslog'>System Log</a><br><br>";
+  html += "<a href='/factory' style='color:#c0392b;'>Factory Reset</a>";
   html += "</div></div>";
 
   html += "<script>";
@@ -2023,59 +2069,35 @@ String fileManagerPage() {
   html += "  btn.disabled=true;btn.textContent='Uploading...';";
   html += "  prog.style.display='block';bar.style.width='0%';";
   html += "  stat.textContent='';";
-  // Chunked upload: send file in 32KB pieces via sequential POST requests
-  // Each chunk retries up to 3 times on failure before aborting
   html += "  var CHUNK=32768;";
   html += "  var offset=0;";
   html += "  var total=f.size;";
   html += "  var retries=0;";
-  html += "  var maxRetries=3;";
-  html += "  function abortUpload(msg){";
-  html += "    stat.textContent=msg;stat.style.color='#c0392b';";
-  html += "    btn.disabled=false;btn.textContent='Upload';";
-  html += "    var ax=new XMLHttpRequest();ax.open('POST','/files/upload_abort',true);ax.send();";
-  html += "  }";
   html += "  function sendChunk(){";
   html += "    var end=Math.min(offset+CHUNK,total);";
   html += "    var blob=f.slice(offset,end);";
   html += "    var xhr=new XMLHttpRequest();";
-  html += "    xhr.open('POST','/files/upload_chunk',true);";
+  html += "    xhr.open('POST','/files/upload',true);";
   html += "    xhr.timeout=30000;";
   html += "    xhr.setRequestHeader('X-Filename',encodeURIComponent(f.name));";
-  html += "    xhr.setRequestHeader('X-Offset',offset);";
-  html += "    xhr.setRequestHeader('X-Total',total);";
+  html += "    xhr.setRequestHeader('X-Offset',String(offset));";
+  html += "    xhr.setRequestHeader('X-Total',String(total));";
   html += "    xhr.setRequestHeader('Content-Type','application/octet-stream');";
   html += "    xhr.onload=function(){";
   html += "      if(xhr.status!=200){";
   html += "        retries++;";
-  html += "        if(retries<=maxRetries){";
-  html += "          stat.textContent='Write error, retry '+retries+'/'+maxRetries+'...';stat.style.color='#FFcc44';";
-  html += "          setTimeout(sendChunk,1000);";
-  html += "          return;";
-  html += "        }";
-  html += "        abortUpload('Upload failed after '+maxRetries+' retries');return;";
+  html += "        if(retries<=3){stat.textContent='Retry '+retries+'/3...';stat.style.color='#FFcc44';setTimeout(sendChunk,1000);return;}";
+  html += "        stat.textContent='Upload failed: '+xhr.responseText;stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';return;";
   html += "      }";
-  html += "      retries=0;";
-  html += "      offset=end;";
-  html += "      var pct=Math.round(offset*100/total);";
-  html += "      bar.style.width=pct+'%';";
+  html += "      retries=0;offset=end;";
+  html += "      bar.style.width=Math.round(offset*100/total)+'%';";
   html += "      if(offset>=total){";
   html += "        stat.textContent='Upload complete!';stat.style.color='#27ae60';";
   html += "        setTimeout(function(){location.reload();},500);";
-  html += "      }else{";
-  html += "        setTimeout(sendChunk,50);";
-  html += "      }";
+  html += "      }else{sendChunk();}";
   html += "    };";
-  html += "    xhr.ontimeout=function(){";
-  html += "      retries++;";
-  html += "      if(retries<=maxRetries){stat.textContent='Timeout, retry '+retries+'/'+maxRetries+'...';stat.style.color='#FFcc44';setTimeout(sendChunk,1000);return;}";
-  html += "      abortUpload('Upload timed out after '+maxRetries+' retries');";
-  html += "    };";
-  html += "    xhr.onerror=function(){";
-  html += "      retries++;";
-  html += "      if(retries<=maxRetries){stat.textContent='Error, retry '+retries+'/'+maxRetries+'...';stat.style.color='#FFcc44';setTimeout(sendChunk,1000);return;}";
-  html += "      abortUpload('Upload failed after '+maxRetries+' retries');";
-  html += "    };";
+  html += "    xhr.ontimeout=function(){retries++;if(retries<=3){setTimeout(sendChunk,1000);return;}stat.textContent='Timed out';stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';};";
+  html += "    xhr.onerror=function(){retries++;if(retries<=3){setTimeout(sendChunk,1000);return;}stat.textContent='Upload failed';stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';};";
   html += "    xhr.send(blob);";
   html += "  }";
   html += "  sendChunk();";
@@ -2314,40 +2336,47 @@ void setupSettingsEndpoints()
     r->send(resp);
   });
 
-  // Chunked file upload — receives raw binary chunks with metadata in headers
-  // Architecture: each chunk request opens the file, writes, and closes it.
-  // This avoids holding a file handle open across HTTP requests, which caused
-  // SPI bus contention with the LCD (shared SPI bus) between chunks.
+  // File upload — chunked binary via JS, received by body handler (4th param).
+  // We use custom chunking instead of multipart because ESPAsyncWebServer's
+  // multipart handler has heap issues with large (5MB+) files on ESP32.
+  // TCP delivers ~974 byte fragments. We buffer them in RAM and write to SD
+  // in one 32KB block per chunk to minimize SD write calls and speed up uploads.
+  // loop() is completely bypassed during upload (uploadInProgress flag).
+  static File uploadFile;
   static String uploadFilename;
-  static size_t uploadBytesWritten;  // track actual bytes written to SD
+  static size_t uploadBytesWritten;
+  static size_t uploadExpectedTotal;
 
-  server.on("/files/upload_chunk", HTTP_POST,
+  // RAM buffer for accumulating TCP fragments before writing to SD
+  #define UPLOAD_BUF_SIZE 32768
+  static uint8_t *uploadBuf = nullptr;
+  static size_t uploadBufPos = 0;
+
+  server.on("/files/upload", HTTP_POST,
+    // Response handler — fires after body is complete
     [](AsyncWebServerRequest *r) {
-      // This handler fires after the body has been received
       if (uploadError) {
         uploadError = false;
-        uploadInProgress = false;
+        logMsg("Upload: ERROR response sent\n");
         r->send(500, "text/plain", "SD write error");
       } else {
         r->send(200, "text/plain", "OK");
       }
     },
-    NULL,  // no multipart upload handler
-    // Body handler — receives raw POST body in potentially multiple callbacks
+    NULL,  // no multipart handler
+    // Body handler — receives raw binary POST body
     [](AsyncWebServerRequest *r, uint8_t *data, size_t len, size_t index, size_t total) {
       if (!webEnabled || !sdCardOk) return;
       if (uploadError) return;
 
-      // We use a local File for each request — opened on first callback, closed on last
-      static File chunkFile;
-
-      // First body callback for this HTTP request
+      // First callback of each HTTP request
       if (index == 0) {
+        uploadError = false;
+        String fname = r->hasHeader("X-Filename") ? r->getHeader("X-Filename")->value() : "";
         size_t offset = r->hasHeader("X-Offset") ? r->getHeader("X-Offset")->value().toInt() : 0;
         size_t fileTotal = r->hasHeader("X-Total") ? r->getHeader("X-Total")->value().toInt() : 0;
-        String fname = r->hasHeader("X-Filename") ? r->getHeader("X-Filename")->value() : "";
 
-        // URL-decode the filename
+        // URL-decode filename
         String decoded;
         for (unsigned int i = 0; i < fname.length(); i++) {
           if (fname[i] == '%' && i + 2 < fname.length()) {
@@ -2361,86 +2390,83 @@ void setupSettingsEndpoints()
           }
         }
         fname = decoded;
-        uploadFilename = "/" + fname;
 
-        if (offset == 0) {
-          // First chunk of a new file — create/truncate
-          uploadInProgress = true;
+        if (offset == 0 && !uploadFile) {
+          // First chunk of new upload — allocate buffer and open file
+          if (!uploadBuf) {
+            uploadBuf = (uint8_t *)malloc(UPLOAD_BUF_SIZE);
+            if (!uploadBuf) {
+              logMsg("Upload: FAILED to allocate buffer\n");
+              uploadError = true;
+              return;
+            }
+          }
+          uploadBufPos = 0;
+          uploadFilename = "/" + fname;
           uploadBytesWritten = 0;
-          Serial.printf("Chunked upload start: %s (%u bytes total)\n", uploadFilename.c_str(), fileTotal);
-          chunkFile = SD.open(uploadFilename, FILE_WRITE);
-        } else {
-          // Continuation chunk — open for append
-          chunkFile = SD.open(uploadFilename, FILE_APPEND);
-        }
-
-        if (!chunkFile) {
-          Serial.printf("Failed to open file at offset %u\n", offset);
+          uploadExpectedTotal = fileTotal;
+          uploadInProgress = true;
+          logMsg("Upload start: %s (%u bytes expected)\n", uploadFilename.c_str(), fileTotal);
+          uploadFile = SD.open(uploadFilename, FILE_WRITE);
+          if (!uploadFile) {
+            logMsg("Upload: FAILED to create file\n");
+            uploadError = true;
+            return;
+          }
+        } else if (!uploadFile) {
+          logMsg("Upload: file handle lost at offset %u\n", offset);
           uploadError = true;
           return;
         }
+        // Reset buffer for this chunk
+        uploadBufPos = 0;
       }
 
-      // Write this fragment to SD — retry up to 3 times on short writes
-      if (chunkFile && len > 0) {
-        uint8_t *ptr = data;
-        size_t remaining = len;
-        int retries = 0;
-        const int maxRetries = 3;
-        while (remaining > 0) {
-          size_t written = chunkFile.write(ptr, remaining);
-          if (written > 0) {
-            ptr += written;
-            remaining -= written;
-            uploadBytesWritten += written;
-            retries = 0;
-          } else {
-            retries++;
-            if (retries > maxRetries) {
-              Serial.printf("SD write failed after %d retries (%u bytes remaining)\n", maxRetries, remaining);
-              uploadError = true;
-              chunkFile.close();
-              return;
-            }
-            Serial.printf("SD write retry %d/%d (%u bytes remaining)\n", retries, maxRetries, remaining);
-            delay(10);
+      if (uploadError) return;
+
+      // Accumulate data into RAM buffer
+      if (len > 0 && uploadBuf) {
+        memcpy(uploadBuf + uploadBufPos, data, len);
+        uploadBufPos += len;
+      }
+
+      // Last TCP fragment for this HTTP request — write entire buffer to SD at once
+      if ((index + len) == total) {
+        if (uploadFile && uploadBufPos > 0) {
+          size_t written = uploadFile.write(uploadBuf, uploadBufPos);
+          if (written != uploadBufPos) {
+            logMsg("Upload: SD write %u/%u\n", written, uploadBufPos);
+            uploadError = true;
+            uploadFile.close();
+            uploadFile = File();  // clear handle
+            uploadInProgress = false;
+            return;
           }
+          uploadBytesWritten += written;
+          uploadFile.flush();
         }
-      }
-
-      // Last body callback for this HTTP request — flush and close
-      if (chunkFile && (index + len) == total) {
-        chunkFile.flush();
-        chunkFile.close();
 
         // Check if this was the final chunk of the whole file
-        size_t fileTotal = r->hasHeader("X-Total") ? r->getHeader("X-Total")->value().toInt() : 0;
         size_t offset = r->hasHeader("X-Offset") ? r->getHeader("X-Offset")->value().toInt() : 0;
-        if (offset + total >= fileTotal) {
+        if (offset + total >= uploadExpectedTotal) {
+          uploadFile.close();
+          uploadFile = File();  // clear handle
+
+          // Read back actual file size to verify
+          File check = SD.open(uploadFilename, FILE_READ);
+          size_t actualSize = 0;
+          if (check) { actualSize = check.size(); check.close(); }
+
           uploadInProgress = false;
-          Serial.printf("Chunked upload complete: %s (%u bytes written)\n", uploadFilename.c_str(), uploadBytesWritten);
+          logMsg("Upload done: %s wrote=%u expect=%u ondisk=%u\n",
+                 uploadFilename.c_str(), uploadBytesWritten, uploadExpectedTotal, actualSize);
 
-          if (uploadBytesWritten != fileTotal) {
-            Serial.printf("WARNING: Byte count mismatch! Expected %u, tracked %u\n", fileTotal, uploadBytesWritten);
-          }
-
+          if (uploadBuf) { free(uploadBuf); uploadBuf = nullptr; }
           rescanMP3Files();
         }
       }
     }
   );
-
-  // Upload abort — client calls this to clean up partial file on failure
-  server.on("/files/upload_abort", HTTP_POST, [](AsyncWebServerRequest *r) {
-    uploadInProgress = false;
-    uploadError = false;
-    if (uploadFilename.length() > 0 && SD.exists(uploadFilename.c_str())) {
-      SD.remove(uploadFilename.c_str());
-      Serial.printf("Upload aborted, deleted partial: %s\n", uploadFilename.c_str());
-      rescanMP3Files();
-    }
-    r->send(200, "text/plain", "OK");
-  });
 
   // File delete
   server.on("/files/delete", HTTP_POST, [](AsyncWebServerRequest *r) {
@@ -2509,6 +2535,126 @@ void setupSettingsEndpoints()
     String msg = "Deleted " + String(deleted) + " files";
     if (failed > 0) msg += ", " + String(failed) + " failed";
     r->send(200, "text/plain", msg);
+  });
+
+  // Factory reset page
+  server.on("/factory", HTTP_GET, [](AsyncWebServerRequest *r) {
+    WEB_GUARD();
+    String html;
+    html.reserve(3000);
+    html += "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
+    html += "<title>Factory Reset</title><style>";
+    html += FPSTR(CSS);
+    html += "</style></head><body><div class='box'>";
+    html += "<h2 style='color:#c0392b;'>Factory Reset</h2>";
+    html += "<div style='background:#2a1515;border:1px solid #c0392b;border-radius:8px;padding:16px;margin-bottom:20px;'>";
+    html += "<p style='color:#ff6b6b;font-size:15px;margin:0 0 10px;font-weight:bold;'>This will permanently erase everything:</p>";
+    html += "<p style='color:#ccc;font-size:14px;margin:0 0 6px;'>&#x2022; All MP3 files on the SD card</p>";
+    html += "<p style='color:#ccc;font-size:14px;margin:0 0 6px;'>&#x2022; Alarm time, sound, volume, and snooze settings</p>";
+    html += "<p style='color:#ccc;font-size:14px;margin:0 0 6px;'>&#x2022; Location, timezone, and brightness settings</p>";
+    html += "<p style='color:#ccc;font-size:14px;margin:0 0 6px;'>&#x2022; WiFi network credentials</p>";
+    html += "<p style='color:#ff6b6b;font-size:14px;margin:12px 0 0;'>The device will reboot into AP setup mode. There is no undo and no backup.</p>";
+    html += "</div>";
+    html += "<p class='status' id='status'></p>";
+    html += "<button class='btnClear' id='resetBtn' onclick='doReset()'>Factory Reset</button>";
+    html += "<hr style='border:0;border-top:1px solid #333;margin:20px 0;'>";
+    html += "<div class='nav'><a href='/'>Back to Clock</a></div>";
+    html += "</div>";
+    html += "<script>";
+    html += "function doReset(){";
+    html += "  if(!confirm('Are you sure you want to factory reset this device?\\n\\nAll files, settings, and WiFi credentials will be permanently erased.'))return;";
+    html += "  if(!confirm('Last chance - this cannot be undone.\\n\\nThe device will reboot into setup mode.'))return;";
+    html += "  var btn=document.getElementById('resetBtn');";
+    html += "  var stat=document.getElementById('status');";
+    html += "  btn.disabled=true;btn.textContent='Resetting...';";
+    html += "  stat.textContent='Erasing all data...';stat.style.color='#c0392b';";
+    html += "  var xhr=new XMLHttpRequest();";
+    html += "  xhr.open('POST','/factory/confirm',true);";
+    html += "  xhr.onload=function(){";
+    html += "    stat.textContent='Device is rebooting into setup mode...';stat.style.color='#FFcc44';";
+    html += "    btn.textContent='Rebooting...';";
+    html += "  };";
+    html += "  xhr.onerror=function(){";
+    html += "    stat.textContent='Device is rebooting into setup mode...';stat.style.color='#FFcc44';";
+    html += "    btn.textContent='Rebooting...';";
+    html += "  };";
+    html += "  xhr.send();";
+    html += "}";
+    html += "</script>";
+    html += "</body></html>";
+    r->send(200, "text/html", html);
+  });
+
+  // Factory reset confirm — wipes everything and reboots
+  server.on("/factory/confirm", HTTP_POST, [](AsyncWebServerRequest *r) {
+    WEB_GUARD();
+    Serial.println("FACTORY RESET initiated");
+
+    // 1. Wipe all files on SD card
+    if (sdCardOk) {
+      File root = SD.open("/");
+      if (root) {
+        String toDelete[64];
+        int count = 0;
+        File entry = root.openNextFile();
+        while (entry && count < 64) {
+          if (!entry.isDirectory()) {
+            String name = String(entry.name());
+            if (!name.startsWith("/")) name = "/" + name;
+            toDelete[count++] = name;
+          }
+          entry = root.openNextFile();
+        }
+        root.close();
+        for (int i = 0; i < count; i++) {
+          SD.remove(toDelete[i].c_str());
+          Serial.printf("Factory wipe: %s\n", toDelete[i].c_str());
+        }
+      }
+    }
+
+    // 2. Clear all preference namespaces
+    prefs.begin("wifi", false); prefs.clear(); prefs.end();
+    prefs.begin("loc", false); prefs.clear(); prefs.end();
+    prefs.begin("alarm", false); prefs.clear(); prefs.end();
+    Serial.println("All preferences cleared");
+
+    r->send(200, "text/plain", "OK");
+    delay(1000);
+    ESP.restart();
+  });
+
+  // Log viewer page
+  server.on("/syslog", HTTP_GET, [](AsyncWebServerRequest *r) {
+    r->send(200, "text/html",
+      "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+      "<title>Log</title><style>"
+      "body{font-family:Arial;background:#111;color:#eee;padding:20px;max-width:600px;margin:auto;}"
+      "pre{background:#000;color:#0f0;padding:12px;border-radius:8px;font-size:11px;"
+      "white-space:pre-wrap;word-wrap:break-word;max-height:75vh;overflow-y:auto;}"
+      "a{color:#7cf;} .b{padding:10px 16px;border:none;border-radius:6px;color:#fff;cursor:pointer;margin:4px;font-size:14px;}"
+      "</style></head><body>"
+      "<h2 style='color:#7cf;'>System Log</h2>"
+      "<pre id='lp'>Loading...</pre>"
+      "<button class='b' style='background:#007bff;' onclick='fl()'>Refresh</button>"
+      "<button class='b' style='background:#c0392b;' onclick='cl()'>Clear</button>"
+      "<p style='margin-top:16px;'><a href='/'>Back to Clock</a></p>"
+      "<script>"
+      "function fl(){fetch('/syslog_data').then(function(r){return r.text();}).then(function(t){var p=document.getElementById('lp');p.textContent=t||'(empty)';p.scrollTop=p.scrollHeight;});}"
+      "function cl(){fetch('/syslog_clear').then(function(){fl();});}"
+      "fl();setInterval(fl,5000);"
+      "</script></body></html>");
+  });
+
+  server.on("/syslog_data", HTTP_GET, [](AsyncWebServerRequest *r) {
+    r->send(200, "text/plain", getLog());
+  });
+
+  server.on("/syslog_clear", HTTP_GET, [](AsyncWebServerRequest *r) {
+    logPos = 0;
+    logWrapped = false;
+    memset(logBuffer, 0, LOG_BUF_SIZE);
+    r->send(200, "text/plain", "OK");
   });
 }
 
@@ -2737,6 +2883,12 @@ void setup()
 // ==========================================================================
 void loop()
 {
+  // During file upload, skip ALL display and SD activity to keep SPI bus free
+  if (uploadInProgress) {
+    delay(1);
+    return;
+  }
+
   lv_timer_handler();
 
   if (captivePortalRunning) {
