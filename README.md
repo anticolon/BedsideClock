@@ -13,7 +13,7 @@ Support my work: <https://buymeacoffee.com/kl.design>
 
 > **By K.L Design**
 
-<img src="bedside_clock_promo.jpg" alt="Bedside Clock" width="1000">
+[![Building the Smart Bedside Clock](https://img.youtube.com/vi/3SUdX7Zpfpg/maxresdefault.jpg)](https://www.youtube.com/watch?v=3SUdX7Zpfpg)
 
 ---
 
