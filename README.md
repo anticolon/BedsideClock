@@ -14,7 +14,7 @@ Support my work: <https://buymeacoffee.com/kl.design>
 > **By K.L Design**
 
 [![Building the Smart Bedside Clock](https://img.youtube.com/vi/3SUdX7Zpfpg/maxresdefault.jpg)](https://www.youtube.com/watch?v=3SUdX7Zpfpg)
-* 👆 Click to watch the build video on YouTube *
+👆 Click to watch the build video on YouTube
 ---
 
 ## Features
