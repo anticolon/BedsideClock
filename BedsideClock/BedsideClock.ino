@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.1.0-rc2"
+#define FW_VERSION "1.1.0-rc3"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -115,7 +115,9 @@ LV_FONT_DECLARE(lv_font_clock_big);
 static char logBuffer[LOG_BUF_SIZE];
 static size_t logPos = 0;
 static bool logWrapped = false;
+static portMUX_TYPE logMux = portMUX_INITIALIZER_UNLOCKED;  // logMsg() is called from loop() and AsyncTCP
 
+void logMsg(const char *fmt, ...) __attribute__((format(printf, 1, 2)));  // compiler checks format strings
 void logMsg(const char *fmt, ...) {
   char tmp[256];
   va_list args;
@@ -129,6 +131,7 @@ void logMsg(const char *fmt, ...) {
   Serial.print(tmp);
 
   // Write to ring buffer
+  portENTER_CRITICAL(&logMux);
   for (int i = 0; i < n; i++) {
     logBuffer[logPos] = tmp[i];
     logPos++;
@@ -137,19 +140,36 @@ void logMsg(const char *fmt, ...) {
       logWrapped = true;
     }
   }
+  portEXIT_CRITICAL(&logMux);
 }
 
 String getLog() {
-  String out;
-  out.reserve(LOG_BUF_SIZE + 64);
+  // Snapshot under the lock (no heap work inside the critical section)
+  char *snap = (char *)malloc(LOG_BUF_SIZE + 1);
+  if (!snap) return String("(out of memory)");
+  size_t n = 0;
+  portENTER_CRITICAL(&logMux);
   if (logWrapped) {
-    // Read from logPos to end, then from 0 to logPos
-    for (size_t i = logPos; i < LOG_BUF_SIZE; i++) out += logBuffer[i];
-    for (size_t i = 0; i < logPos; i++) out += logBuffer[i];
+    memcpy(snap, logBuffer + logPos, LOG_BUF_SIZE - logPos);
+    memcpy(snap + (LOG_BUF_SIZE - logPos), logBuffer, logPos);
+    n = LOG_BUF_SIZE;
   } else {
-    for (size_t i = 0; i < logPos; i++) out += logBuffer[i];
+    memcpy(snap, logBuffer, logPos);
+    n = logPos;
   }
+  portEXIT_CRITICAL(&logMux);
+  snap[n] = 0;
+  String out(snap);
+  free(snap);
   return out;
+}
+
+void clearLog() {
+  portENTER_CRITICAL(&logMux);
+  logPos = 0;
+  logWrapped = false;
+  memset(logBuffer, 0, LOG_BUF_SIZE);
+  portEXIT_CRITICAL(&logMux);
 }
 
 // ==========================================================================
@@ -188,7 +208,7 @@ String getLog() {
 
 #define MENU_HOLD_MS  1000   // hold encoder button to enter/exit menu
 
-#define FORCE_PORTAL_HOLD_MS  1200
+#define FORCE_PORTAL_HOLD_MS  5000   // matches README; long enough to avoid accidental reboots
 
 // ==========================================================================
 //  DISPLAY  (landscape 320×172)
@@ -300,7 +320,7 @@ const char* alarmMessages[] = {
   "Be proud of who you are!",
   "Your family believes in you!"
 };
-#define NUM_ALARM_MESSAGES 15
+#define NUM_ALARM_MESSAGES (sizeof(alarmMessages) / sizeof(alarmMessages[0]))
 const char* currentAlarmMsg = alarmMessages[0];
 int    alarmLastTrigDay = -1;  // day of month last triggered
 
@@ -498,12 +518,12 @@ void applyTimezone() {
   // Open-Meteo's utc_offset_seconds handles DST at fetch time.
   // We re-sync NTP periodically so the offset stays current.
   configTime(cfgUtcOffset, 0, NTP_SERVER);
-  Serial.printf("Timezone applied: UTC%+d (%s)\n", cfgUtcOffset/3600, cfgTzName.c_str());
+  logMsg("Timezone applied: UTC%+d (%s)\n", cfgUtcOffset/3600, cfgTzName.c_str());
 }
 
 void applyBrightness() {
   analogWrite(LCD_BL, cfgBrightness);
-  Serial.printf("Brightness: %d/255\n", cfgBrightness);
+  logMsg("Brightness: %d/255\n", cfgBrightness);
 }
 
 // ==========================================================================
@@ -549,13 +569,13 @@ void rescanMP3Files() {
     }
     root.close();
   }
-  Serial.printf("Rescan: found %d MP3 files\n", mp3FileCount);
+  logMsg("Rescan: found %d MP3 files\n", mp3FileCount);
 
   // If no alarm sound is selected (or selected file was deleted), auto-select the first one
   if (mp3FileCount > 0 && (alarmSound.length() == 0 || !SD.exists(alarmSound.c_str()))) {
     alarmSound = mp3Files[0];
     saveAlarmSettings();
-    Serial.printf("Auto-selected alarm sound: %s\n", alarmSound.c_str());
+    logMsg("Auto-selected alarm sound: %s\n", alarmSound.c_str());
   }
 }
 
@@ -563,11 +583,11 @@ void initSDCard() {
   SPI.begin(LCD_SCK, SD_MISO, LCD_MOSI, SD_CS);
   if (SD.begin(SD_CS)) {
     sdCardOk = true;
-    Serial.println("SD card mounted");
+    logMsg("SD card mounted\n");
     rescanMP3Files();
   } else {
     sdCardOk = false;
-    Serial.println("SD card mount failed");
+    logMsg("SD card mount failed\n");
   }
 }
 
@@ -659,9 +679,9 @@ void startAlarmSound() {
   if (mp3Player->begin(mp3Buffer, audioOut)) {
     audioPlaying = true;
     alarmMp3StartedAt = millis();
-    Serial.printf("Alarm playing: %s\n", alarmSound.c_str());
+    logMsg("Alarm playing: %s\n", alarmSound.c_str());
   } else {
-    Serial.println("Failed to start MP3");
+    logMsg("Failed to start MP3\n");
     delete mp3Player; mp3Player = nullptr;
     delete mp3Buffer; mp3Buffer = nullptr;
     delete mp3Source; mp3Source = nullptr;
@@ -695,9 +715,9 @@ void startTestSound() {
   if (mp3Player->begin(mp3Buffer, audioOut)) {
     audioPlaying = true;
     testPlaying = true;
-    Serial.printf("Test playing: %s at %d%%\n", alarmSound.c_str(), alarmVolume);
+    logMsg("Test playing: %s at %d%%\n", alarmSound.c_str(), alarmVolume);
   } else {
-    Serial.println("Failed to start test MP3");
+    logMsg("Failed to start test MP3\n");
     delete mp3Player; mp3Player = nullptr;
     delete mp3Buffer; mp3Buffer = nullptr;
     delete mp3Source; mp3Source = nullptr;
@@ -752,9 +772,9 @@ void loopAudio() {
         mp3Player = new AudioGeneratorMP3();
         if (mp3Player->begin(mp3Buffer, audioOut)) {
           alarmMp3StartedAt = millis();
-          Serial.println("Alarm MP3 looping...");
+          logMsg("Alarm MP3 looping...\n");
         } else {
-          Serial.println("Failed to restart alarm MP3");
+          logMsg("Failed to restart alarm MP3\n");
           delete mp3Player; mp3Player = nullptr;
           delete mp3Buffer; mp3Buffer = nullptr;
           delete mp3Source; mp3Source = nullptr;
@@ -773,18 +793,40 @@ void loopAudio() {
 // ==========================================================================
 //  Alarm check (called every loop iteration in clock mode)
 // ==========================================================================
+// Fires during the alarm minute, and also catches up if the alarm moment was
+// passed since the previous check (loop paused by an upload or a long blocking
+// call, or the clock jumped forward, e.g. DST), up to ALARM_CATCHUP_MIN late.
+// No catch-up on the first check after boot.
+#define ALARM_CATCHUP_MIN 60
+
 void checkAlarm() {
-  if (!alarmEnabled || alarmFiring) return;
+  static time_t lastCheck = 0;
 
   struct tm ti;
-  if (!getLocalTime(&ti, 50)) return;
+  if (!getLocalTime(&ti, 0)) return;
+  time_t now = mktime(&ti);
+  time_t prev = lastCheck ? lastCheck : now;
+  lastCheck = now;  // track even while disarmed, so arming never fires retroactively
+
+  if (!alarmEnabled || alarmFiring) return;
 
   // Reset trigger flag on new day
   if (ti.tm_mday != alarmLastTrigDay) {
     alarmTriggeredToday = false;
   }
 
-  if (!alarmTriggeredToday && ti.tm_hour == alarmHour && ti.tm_min == alarmMinute) {
+  // Most recent occurrence of the alarm time (today, or yesterday if still ahead)
+  struct tm t = ti;
+  t.tm_hour = alarmHour;
+  t.tm_min = alarmMinute;
+  t.tm_sec = 0;
+  time_t target = mktime(&t);
+  if (target > now) target -= 24 * 3600;
+
+  bool inAlarmMinute = (now - target < 60);
+  bool passedSinceLastCheck = (target > prev && now - target <= ALARM_CATCHUP_MIN * 60);
+
+  if (!alarmTriggeredToday && (inAlarmMinute || passedSinceLastCheck)) {
     alarmFiring = true;
     alarmTriggeredToday = true;
     alarmLastTrigDay = ti.tm_mday;
@@ -793,7 +835,7 @@ void checkAlarm() {
     saveAlarmSettings();
     startAlarmSound();
     updateAlarmLabel();
-    Serial.println("ALARM TRIGGERED!");
+    logMsg("ALARM TRIGGERED!\n");
   }
 }
 
@@ -804,7 +846,7 @@ void dismissAlarm() {
   snoozeEndTime = 0;
   stopAlarmSound();
   updateAlarmLabel();
-  Serial.println("Alarm dismissed");
+  logMsg("Alarm dismissed\n");
 }
 
 void snoozeAlarm() {
@@ -814,7 +856,7 @@ void snoozeAlarm() {
   alarmSnoozing = true;
   snoozeEndTime = millis() + (unsigned long)snoozeDuration * 60UL * 1000UL;
   updateAlarmLabel();
-  Serial.printf("Snoozing for %d minutes\n", snoozeDuration);
+  logMsg("Snoozing for %d minutes\n", snoozeDuration);
 }
 
 void checkSnooze() {
@@ -825,7 +867,7 @@ void checkSnooze() {
     alarmFiring = true;
     startAlarmSound();
     updateAlarmLabel();
-    Serial.println("Snooze ended — alarm firing again!");
+    logMsg("Snooze ended — alarm firing again!\n");
   }
 }
 
@@ -1084,7 +1126,7 @@ void menuOpen() {
   encAccum = 0;
   menuActive = true;
   buildMenuUI();
-  Serial.println("Menu opened");
+  logMsg("Menu opened\n");
 }
 
 void menuClose() {
@@ -1099,7 +1141,7 @@ void menuClose() {
   if (testPlaying) stopTestSound();
   destroyMenuUI();
   showClockUI();
-  Serial.println("Menu closed");
+  logMsg("Menu closed\n");
 }
 
 void menuHandleInput() {
@@ -1350,7 +1392,7 @@ void build_clock_ui()
 
   // ---- LEFT 3/4: Time + Date, centered ----
   label_time = lv_label_create(scr);
-  lv_label_set_text(label_time, "00:00");
+  lv_label_set_text(label_time, "");  // stays blank until the time is valid (font has digits only)
   lv_obj_set_style_text_font(label_time, &lv_font_clock_big, 0);
   lv_obj_set_style_text_color(label_time, lv_color_white(), 0);
   lv_obj_set_style_text_letter_space(label_time, 2, 0);
@@ -1359,7 +1401,7 @@ void build_clock_ui()
   lv_obj_set_pos(label_time, 0, (scrH / 2) - 44);
 
   label_date = lv_label_create(scr);
-  lv_label_set_text(label_date, "");
+  lv_label_set_text(label_date, "Syncing time...");
   lv_obj_set_style_text_font(label_date, &lv_font_montserrat_20, 0);
   lv_obj_set_style_text_color(label_date, lv_color_hex(0xBBBBBB), 0);
   lv_obj_set_style_text_align(label_date, LV_TEXT_ALIGN_CENTER, 0);
@@ -1430,7 +1472,7 @@ static char prevTimeStr[6] = "";
 void update_clock_display()
 {
   struct tm ti;
-  if (!getLocalTime(&ti, 100)) return;
+  if (!getLocalTime(&ti, 0)) return;
 
   char timeBuf[6];
   snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", ti.tm_hour, ti.tm_min);
@@ -1467,7 +1509,7 @@ void update_weather_display()
   // Daily high/low
   if (label_hilo) {
     char hiloBuf[24];
-    snprintf(hiloBuf, sizeof(hiloBuf), "%.0f\xC2\xB0 / %.0f\xC2\xB0", weatherTempMin, weatherTempMax);
+    snprintf(hiloBuf, sizeof(hiloBuf), "%.0f\xC2\xB0 / %.0f\xC2\xB0", weatherTempMax, weatherTempMin);  // high / low
     lv_label_set_text(label_hilo, hiloBuf);
   }
 
@@ -1534,7 +1576,8 @@ void fetchWeather()
       if (start < (int)payload.length() && payload[start] == '-') end++;
       while (end < (int)payload.length() && isdigit(payload[end])) end++;
       int newOffset = payload.substring(start, end).toInt();
-      if (newOffset != cfgUtcOffset) {
+      bool haveDigits = end > start + (payload[start] == '-' ? 1 : 0);
+      if (haveDigits && abs(newOffset) <= 14 * 3600 && newOffset != cfgUtcOffset) {
         cfgUtcOffset = newOffset;
         saveLocationSettings();
         applyTimezone();
@@ -1564,14 +1607,16 @@ void fetchWeather()
     }
 
     weatherValid = true;
-    Serial.printf("Weather: code=%d, temp=%.1fC, lo=%.1f hi=%.1f, day=%d\n",
+    logMsg("Weather: code=%d, temp=%.1fC, lo=%.1f hi=%.1f, day=%d\n",
                   weatherCode, weatherTemp, weatherTempMin, weatherTempMax, weatherIsDay);
   } else {
-    Serial.printf("Weather HTTP error: %d\n", httpCode);
+    logMsg("Weather HTTP error: %d\n", httpCode);
   }
 
   http.end();
   lastWeatherFetch = millis();
+  // After a failure, retry in about a minute instead of waiting the full interval
+  if (httpCode != 200) lastWeatherFetch -= WEATHER_INTERVAL_MS - 60000UL;
 }
 
 // ==========================================================================
@@ -1836,7 +1881,7 @@ String otaPage()
   html += "      attempts++;";
   html += "      var c=new AbortController();";
   html += "      var t=setTimeout(()=>c.abort(),3000);";
-  html += "      fetch('/brightness',{signal:c.signal,cache:'no-store'}).then(r=>{";
+  html += "      fetch('/ping',{signal:c.signal,cache:'no-store'}).then(r=>{";
   html += "        clearTimeout(t);";
   html += "        if(r.ok){clearInterval(check);clearInterval(iv);window.location.replace('/');}";
   html += "      }).catch(()=>{clearTimeout(t);});";
@@ -1908,7 +1953,7 @@ String clockHomePage()
   if (alarmEnabled) html += " checked";
   html += "><span class='slider'></span></label>";
   html += "<span style='color:#aaa;font-size:14px;' id='alarmStatus'>";
-  html += alarmEnabled ? "Armed" : (alarmFiring ? "RINGING" : "Off");
+  html += alarmFiring ? "RINGING" : (alarmSnoozing ? "Snoozing" : (alarmEnabled ? "Armed" : "Off"));
   html += "</span>";
   html += "</div>";
 
@@ -2074,6 +2119,10 @@ void setupOTAEndpoints()
 {
   server.on("/update", HTTP_GET, [](AsyncWebServerRequest *r) {
     r->send(200, "text/html", otaPage());
+  });
+  // Unguarded liveness check — the OTA page polls it to detect the reboot
+  server.on("/ping", HTTP_GET, [](AsyncWebServerRequest *r) {
+    r->send(200, "text/plain", FW_VERSION);
   });
   static bool otaOk = false;
   static String otaErr;
@@ -2341,7 +2390,7 @@ String fileManagerPage() {
   html += "}";
 
   html += "function wipeCard(){";
-  html += "  if(!confirm('Delete ALL MP3 files from the SD card?'))return;";
+  html += "  if(!confirm('Delete ALL files from the SD card?'))return;";
   html += "  if(!confirm('Are you sure? This cannot be undone.'))return;";
   html += "  var xhr=new XMLHttpRequest();";
   html += "  xhr.open('POST','/files/wipe',true);";
@@ -2582,6 +2631,7 @@ void setupSettingsEndpoints()
 
   // Alarm test status (for polling)
   server.on("/alarm/testStatus", HTTP_GET, [](AsyncWebServerRequest *r) {
+    WEB_GUARD();
     r->send(200, "text/plain", testPlaying ? "playing" : "stopped");
   });
 
@@ -2605,7 +2655,7 @@ void setupSettingsEndpoints()
     if (!r->hasParam("f")) { r->send(400, "text/plain", "Missing filename"); return; }
     String fname = r->getParam("f")->value();
     if (!fname.startsWith("/")) fname = "/" + fname;
-    Serial.printf("Download request: [%s]\n", fname.c_str());
+    logMsg("Download request: [%s]\n", fname.c_str());
     if (!SD.exists(fname.c_str())) { r->send(404, "text/plain", "File not found"); return; }
     // The library owns the File and closes it when the response ends or the
     // client disconnects (the old hand-rolled chunked reader leaked a handle
@@ -2657,6 +2707,8 @@ void setupSettingsEndpoints()
           uploadFailLocked(400, "Invalid filename (must be .mp3)", false);
         } else if (total > UPLOAD_BUF_SIZE) {
           uploadFailLocked(413, "Chunk too large", false);
+        } else if (offset == 0 && audioPlaying && path == alarmSound) {
+          uploadFailLocked(409, "This file is playing - stop playback first", false);
         } else if (offset == 0) {
           // New upload — discard any stale one (client restarted or gave up)
           if (uploadInProgress) uploadCleanupLocked(true, "superseded");
@@ -2757,7 +2809,11 @@ void setupSettingsEndpoints()
     String fname = r->getParam("f", true)->value();
     // Ensure leading slash
     if (!fname.startsWith("/")) fname = "/" + fname;
-    Serial.printf("Delete request: [%s]\n", fname.c_str());
+    logMsg("Delete request: [%s]\n", fname.c_str());
+    if (audioPlaying && fname == alarmSound) {
+      r->send(409, "text/plain", "This file is playing - stop playback first");
+      return;
+    }
     if (SD.exists(fname.c_str())) {
       // If deleting the active alarm sound, clear it
       if (fname == alarmSound) {
@@ -2765,24 +2821,25 @@ void setupSettingsEndpoints()
         saveAlarmSettings();
       }
       if (SD.remove(fname.c_str())) {
-        rescanMP3Files();
-        Serial.printf("Deleted OK: %s\n", fname.c_str());
+        reqRescanMP3 = true;  // rescan in the main loop (mp3Files[] isn't thread-safe)
+        logMsg("Deleted OK: %s\n", fname.c_str());
         r->send(200, "text/plain", "OK");
       } else {
-        Serial.printf("SD.remove failed: %s\n", fname.c_str());
+        logMsg("SD.remove failed: %s\n", fname.c_str());
         r->send(500, "text/plain", "Delete failed");
       }
     } else {
-      Serial.printf("File not found: %s\n", fname.c_str());
+      logMsg("File not found: %s\n", fname.c_str());
       r->send(404, "text/plain", "File not found: " + fname);
     }
   });
 
-  // Wipe all MP3 files from SD card
+  // Wipe all files from the SD card root
   server.on("/files/wipe", HTTP_POST, [](AsyncWebServerRequest *r) {
     WEB_GUARD();
     if (!sdCardOk) { r->send(500, "text/plain", "No SD card"); return; }
-    Serial.println("Wipe SD card requested");
+    logMsg("Wipe SD card requested\n");
+    if (audioPlaying) { r->send(409, "text/plain", "Audio is playing - stop playback first"); return; }
     int deleted = 0, failed = 0;
     File root = SD.open("/");
     if (!root) { r->send(500, "text/plain", "Cannot open SD root"); return; }
@@ -2802,17 +2859,17 @@ void setupSettingsEndpoints()
     // Now delete them
     for (int i = 0; i < count; i++) {
       if (SD.remove(toDelete[i].c_str())) {
-        Serial.printf("Wiped: %s\n", toDelete[i].c_str());
+        logMsg("Wiped: %s\n", toDelete[i].c_str());
         deleted++;
       } else {
-        Serial.printf("Wipe failed: %s\n", toDelete[i].c_str());
+        logMsg("Wipe failed: %s\n", toDelete[i].c_str());
         failed++;
       }
     }
     // Clear alarm sound since all files are gone
     alarmSound = "";
     saveAlarmSettings();
-    rescanMP3Files();
+    reqRescanMP3 = true;
     String msg = "Deleted " + String(deleted) + " files";
     if (failed > 0) msg += ", " + String(failed) + " failed";
     r->send(200, "text/plain", msg);
@@ -2869,7 +2926,7 @@ void setupSettingsEndpoints()
   // Factory reset confirm — wipes everything and reboots
   server.on("/factory/confirm", HTTP_POST, [](AsyncWebServerRequest *r) {
     WEB_GUARD();
-    Serial.println("FACTORY RESET initiated");
+    logMsg("FACTORY RESET initiated\n");
 
     // 1. Wipe all files on SD card
     if (sdCardOk) {
@@ -2889,7 +2946,7 @@ void setupSettingsEndpoints()
         root.close();
         for (int i = 0; i < count; i++) {
           SD.remove(toDelete[i].c_str());
-          Serial.printf("Factory wipe: %s\n", toDelete[i].c_str());
+          logMsg("Factory wipe: %s\n", toDelete[i].c_str());
         }
       }
     }
@@ -2898,7 +2955,7 @@ void setupSettingsEndpoints()
     prefs.begin("wifi", false); prefs.clear(); prefs.end();
     prefs.begin("loc", false); prefs.clear(); prefs.end();
     prefs.begin("alarm", false); prefs.clear(); prefs.end();
-    Serial.println("All preferences cleared");
+    logMsg("All preferences cleared\n");
 
     r->send(200, "text/plain", "OK");
     delay(1000);
@@ -2907,6 +2964,7 @@ void setupSettingsEndpoints()
 
   // Log viewer page
   server.on("/syslog", HTTP_GET, [](AsyncWebServerRequest *r) {
+    WEB_GUARD();
     r->send(200, "text/html",
       "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
       "<title>Log</title><style>"
@@ -2928,13 +2986,13 @@ void setupSettingsEndpoints()
   });
 
   server.on("/syslog_data", HTTP_GET, [](AsyncWebServerRequest *r) {
+    WEB_GUARD();
     r->send(200, "text/plain", getLog());
   });
 
   server.on("/syslog_clear", HTTP_GET, [](AsyncWebServerRequest *r) {
-    logPos = 0;
-    logWrapped = false;
-    memset(logBuffer, 0, LOG_BUF_SIZE);
+    WEB_GUARD();
+    clearLog();
     r->send(200, "text/plain", "OK");
   });
 }
@@ -3091,7 +3149,7 @@ bool checkBootHoldWithProgress()
 void setup()
 {
   Serial.begin(115200);
-  Serial.printf("\n\nBedside Clock v%s\n", FW_VERSION);
+  logMsg("\n\nBedside Clock v%s\n", FW_VERSION);
   bootGuardCheck();  // first: roll back if this firmware keeps crashing
   delay(200);
 
@@ -3118,7 +3176,7 @@ void setup()
   disp_draw_buf = (lv_color_t *)heap_caps_malloc(bufSize * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   if (!disp_draw_buf)
     disp_draw_buf = (lv_color_t *)heap_caps_malloc(bufSize * sizeof(lv_color_t), MALLOC_CAP_8BIT);
-  if (!disp_draw_buf) { Serial.println("LVGL buf alloc failed!"); while (1) delay(1000); }
+  if (!disp_draw_buf) { logMsg("LVGL buf alloc failed!\n"); while (1) delay(1000); }
 
   lv_disp_draw_buf_init(&draw_buf, disp_draw_buf, NULL, bufSize);
 
@@ -3130,7 +3188,7 @@ void setup()
   disp_drv.draw_buf = &draw_buf;
   lv_disp_drv_register(&disp_drv);
 
-  Serial.printf("Display: %d x %d\n", gfx->width(), gfx->height());
+  logMsg("Display: %d x %d\n", gfx->width(), gfx->height());
 
   // Force dark
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), 0);
@@ -3155,9 +3213,15 @@ void setup()
   lv_update();
   delay(150);
 
+  // Setup portal requested by a BOOT hold in clock mode? (one-shot flag)
+  prefs.begin("boot", false);
+  bool portalRequested = prefs.getBool("portal", false);
+  if (portalRequested) prefs.remove("portal");
+  prefs.end();
+
   // Check BOOT button hold
-  if (digitalRead(BOOT_BTN_PIN) == LOW) {
-    if (checkBootHoldWithProgress()) {
+  if (portalRequested || digitalRead(BOOT_BTN_PIN) == LOW) {
+    if (portalRequested || checkBootHoldWithProgress()) {
       ui_set_status("FORCED SETUP MODE");
       ui_set_ip("Starting portal...");
       lv_update(); delay(400);
@@ -3177,7 +3241,7 @@ void setup()
     ui_set_ip(savedSSID.c_str()); lv_update();
 
     if (connectToWiFi(savedSSID.c_str(), savedPASS.c_str(), WIFI_CONNECT_TIMEOUT_MS)) {
-      Serial.println("WiFi connected, starting clock mode");
+      logMsg("WiFi connected, starting clock mode\n");
 
       // Apply timezone and sync NTP
       applyTimezone();
@@ -3262,8 +3326,10 @@ void loop()
       update_clock_display();
       consumeEncoderDelta();  // rotation does nothing here — don't let it pile up for the menu
 
-      // Update snooze countdown display every loop
-      if (alarmSnoozing) {
+      // Refresh the snooze countdown a few times per second (not every loop)
+      static uint32_t lastSnoozeLabel = 0;
+      if (alarmSnoozing && millis() - lastSnoozeLabel >= 250) {
+        lastSnoozeLabel = millis();
         updateAlarmLabel();
       }
 
@@ -3333,6 +3399,10 @@ void loop()
       lv_bar_set_value(boot_bar, min(pct, 100), LV_ANIM_OFF);
 
       if (held >= FORCE_PORTAL_HOLD_MS) {
+        // Reboot straight into the setup portal (no need to keep holding)
+        prefs.begin("boot", false);
+        prefs.putBool("portal", true);
+        prefs.end();
         ESP.restart();
       }
     } else {

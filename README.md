@@ -36,6 +36,8 @@ Support my work: <https://buymeacoffee.com/kl.design>
 - Test playback to preview the alarm sound at the current volume
 - Configurable snooze duration (1–30 minutes) with a live countdown on screen
 - Random inspirational wake-up messages displayed when the alarm fires
+- Never silent: if the MP3 can't be played (no SD card, missing or broken file) a built-in beep tone plays instead, and a ringing alarm is never quieter than 10 %
+- A missed alarm minute (e.g. during a file upload or a clock jump) is caught up to 60 minutes late
 
 ### Snooze
 - **Tap** the encoder button while the alarm is ringing to snooze
@@ -90,6 +92,7 @@ A responsive, dark-themed web interface accessible from any device on the same n
 - Connect to the AP and a captive portal opens automatically for WiFi configuration
 - Supports WiFi network scanning with signal strength display
 - Hold the **BOOT button** (GPIO9) for 5 seconds at any time to force AP mode and reconfigure WiFi — a progress bar on screen shows the hold duration
+- If the saved WiFi is unreachable at boot (e.g. the router is still starting after a power cut), the clock opens the setup AP but keeps retrying the saved network every 2 minutes while nobody is connected to the AP, and returns to clock mode on its own once WiFi is back
 
 ### MP3 File Management
 - Upload MP3 files to the SD card via the web interface with a real-time progress bar
@@ -98,9 +101,10 @@ A responsive, dark-themed web interface accessible from any device on the same n
 - Currently active alarm sound is highlighted in gold
 - SD card total and used space displayed at the bottom of the file manager
 - Files are automatically rescanned on boot and after every upload or delete
-- If the active alarm sound is deleted, the alarm sound setting is automatically cleared
+- If the active alarm sound is deleted, the first remaining MP3 is selected automatically
+- Files that are currently playing can't be deleted or overwritten (stop playback first)
 - Supports up to 32 MP3 files in the root directory of the SD card
-- Wipe SD Card button with double confirmation to remove all files and reset alarm sound
+- Wipe SD Card button with double confirmation to remove **all** files in the SD card root and reset alarm sound
 - Auto-selects the first available MP3 as alarm sound when no sound is set or the active file is missing
 
 ---
@@ -224,6 +228,10 @@ ESPAsyncWebServer runs its callbacks from the WiFi/TCP task, not the Arduino `lo
 - `audioReqDismiss` — alarm dismiss from web
 - `audioReqVolume` — volume changes from web sliders
 - `uiReqAlarmLabel` — alarm label refresh
+- `reqLocationApply` — apply new timezone and fetch weather after a location change
+- `reqRescanMP3` — rescan the SD card file list after upload/delete/wipe
+
+File uploads are the exception: the upload body handler writes to the SD card directly (guarded by a mutex) while `loop()` pauses all display and SD work, and an idle watchdog in `loop()` aborts an upload if no data arrives for 20 seconds.
 
 ### Audio Buffering
 MP3 playback uses `AudioFileSourceBuffer` (2KB) wrapping `AudioFileSourceSD` to absorb SPI bus contention when the LCD and SD card share the same SPI bus. Without this buffer, display flushes can starve the audio decoder and cause mid-song dropouts.
@@ -343,6 +351,10 @@ Navigate to the clock's IP → **Manage Sound Files** to:
 ### Updating Firmware
 Navigate to the clock's IP → **Firmware Update** to upload a new `.bin` file. The page shows upload progress, then automatically detects when the device reboots and redirects to the home page.
 
+Safety features (from v1.1.0):
+- Only an ESP32-C6 **app** image is accepted — the merged USB-flash binary is rejected with a clear message
+- If a new firmware crashes 3 times in a row shortly after booting, the clock automatically switches back to the firmware it was running before the update
+
 ### Disabling the Web Interface
 For security, you can disable the web interface from the on-screen menu. Navigate to *Webpage* and press to toggle it off. When disabled, all web requests return `403 Forbidden`. The setting persists across reboots. OTA firmware updates and the AP captive portal are not affected, so you can always recover access.
 
@@ -376,6 +388,18 @@ The same message persists through snooze cycles — a fresh random pick happens 
 ---
 
 ## Changelog
+
+### v1.1.0 (release candidate — code review fixes)
+- **OTA safety** — Automatic rollback to the previous firmware after 3 consecutive crash boots; OTA accepts only ESP32-C6 app images; interrupted updates no longer block the next one; real error messages on the update page
+- **Uploads can't freeze the clock** — Every error path cleans up; an idle watchdog aborts uploads whose client disappeared (20 s); new `/files/upload_abort` endpoint used by the page on failure; chunk size is bounds-checked; resent chunks are acknowledged instead of being appended twice; filenames are sanitised
+- **Snooze fix** — A tap during the snooze countdown no longer instantly re-snoozes the next ring
+- **WiFi recovery** — Fallback setup AP keeps retrying the saved network and returns to clock mode; clock mode reconnects after WiFi drops; longer boot connect timeout (20 s)
+- **Never-silent alarm** — Built-in fallback tone and 10 % minimum volume while ringing; missed alarm minutes are caught up (≤ 60 min)
+- **Stability** — Location save, rescans and weather refresh moved out of the web server task; weather is not fetched while audio plays; downloads no longer leak SD file handles; null-safe/validated web parameters
+- **Menu & encoder** — Push-button debounce; rotation outside the menu is discarded; leaving the menu with a long press keeps the edited value; the menu closes when the alarm fires
+- **Web UI** — HTML escaping for file names and locations (names with `'` or `&` work everywhere); `/syslog` now shows the full device log and honours the Webpage on/off switch; status shows Snoozing/RINGING correctly
+- **BOOT hold** — 5 s in both boot and clock mode; in clock mode it now reboots straight into the setup portal
+- Display shows "Syncing time..." until NTP time is valid; weather retries after 1 minute on failure; high/low shown as high / low
 
 ### v1.0.8
 - **Reliable chunked upload** — Rewrote upload to close-per-chunk: each 32KB chunk opens, writes, flushes, and closes the file instead of holding a static file handle across 150+ HTTP requests. Fixes SPI bus contention between SD card and LCD that caused silent file truncation
