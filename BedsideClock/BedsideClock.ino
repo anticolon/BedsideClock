@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.0.9"
+#define FW_VERSION "1.1.0-rc1"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -87,6 +87,7 @@
 #include <ESPAsyncWebServer.h>
 #include <DNSServer.h>
 #include <Update.h>
+#include <esp_ota_ops.h>
 
 #include <Arduino_GFX_Library.h>
 
@@ -432,6 +433,59 @@ void saveLocationSettings() {
   prefs.putInt("utcoff", cfgUtcOffset);
   prefs.putInt("bright", cfgBrightness);
   prefs.putBool("webOn", webEnabled);
+  prefs.end();
+}
+
+// ==========================================================================
+//  OTA safety net — automatic rollback after a crash loop
+// ==========================================================================
+// The bootloader has no rollback support, so the app does it itself. Every
+// boot caused by a crash or watchdog bumps a counter in NVS; a normal boot, or
+// BOOT_HEALTHY_MS of uptime, resets it. After BOOT_CRASH_LIMIT crash boots in a
+// row we switch the boot partition to the other OTA slot — the firmware that
+// ran before the last OTA update — so a bad update can't brick the clock.
+#define BOOT_CRASH_LIMIT  3
+#define BOOT_HEALTHY_MS   (90UL * 1000)
+
+void bootGuardCheck()
+{
+  esp_reset_reason_t why = esp_reset_reason();
+  bool crashed = (why == ESP_RST_PANIC || why == ESP_RST_INT_WDT ||
+                  why == ESP_RST_TASK_WDT || why == ESP_RST_WDT);
+  prefs.begin("boot", false);
+  int crashes = crashed ? prefs.getInt("crashes", 0) + 1 : 0;
+  prefs.putInt("crashes", crashes);
+  prefs.end();
+
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  logMsg("Boot: v%s from %s, reset reason %d, crash boots in a row: %d\n",
+         FW_VERSION, running ? running->label : "?", (int)why, crashes);
+  if (crashes < BOOT_CRASH_LIMIT) return;
+
+  prefs.begin("boot", false);
+  prefs.putInt("crashes", 0);
+  prefs.end();
+
+  const esp_partition_t *other = esp_ota_get_next_update_partition(NULL);
+  esp_app_desc_t desc;
+  if (other && other != running &&
+      esp_ota_get_partition_description(other, &desc) == ESP_OK &&
+      esp_ota_set_boot_partition(other) == ESP_OK) {
+    logMsg("Crash loop: rolling back to %s\n", other->label);
+    delay(100);
+    esp_restart();
+  }
+  logMsg("Crash loop, but no valid firmware in the other slot\n");
+}
+
+// Called from loop(): once we've stayed up long enough, this firmware is good.
+void bootGuardMarkHealthy()
+{
+  static bool done = false;
+  if (done || millis() < BOOT_HEALTHY_MS) return;
+  done = true;
+  prefs.begin("boot", false);
+  if (prefs.getInt("crashes", 0) != 0) prefs.putInt("crashes", 0);
   prefs.end();
 }
 
@@ -1924,21 +1978,51 @@ void setupOTAEndpoints()
   server.on("/update", HTTP_GET, [](AsyncWebServerRequest *r) {
     r->send(200, "text/html", otaPage());
   });
+  static bool otaOk = false;
+  static String otaErr;
   server.on("/doUpdate", HTTP_POST,
     [](AsyncWebServerRequest *r) {
-      bool ok = !Update.hasError();
-      r->send(200, "text/plain", ok ? "OK" : "FAIL");
-      if (ok) { delay(1500); ESP.restart(); }
+      if (otaOk) {
+        r->send(200, "text/plain", "OK");
+        delay(1500);
+        ESP.restart();
+      } else {
+        r->send(500, "text/plain", otaErr.length() ? otaErr : String("No firmware received"));
+      }
     },
     [](AsyncWebServerRequest *r, String filename, size_t index, uint8_t *data, size_t len, bool final) {
       if (index == 0) {
-        Serial.printf("OTA Start: %s\n", filename.c_str());
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { Update.printError(Serial); return; }
+        otaOk = false;
+        otaErr = "";
+        logMsg("OTA start: %s\n", filename.c_str());
+        if (Update.isRunning()) Update.abort();  // a previous attempt was interrupted
+        // Only accept an ESP32-C6 application image: image magic 0xE9, chip id
+        // 0x000D, and the app descriptor magic 0xABCD5432 at offset 0x20.
+        // The merged USB .bin starts with the bootloader instead — writing that
+        // into an app slot would leave the clock unbootable.
+        if (len < 0x24 || data[0] != 0xE9 || data[12] != 0x0D || data[13] != 0x00 ||
+            data[0x20] != 0x32 || data[0x21] != 0x54 || data[0x22] != 0xCD || data[0x23] != 0xAB) {
+          otaErr = "Not an ESP32-C6 app image (use the app .bin, not the merged one)";
+        } else if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+          otaErr = String("Update begin failed: ") + Update.errorString();
+        }
+        if (otaErr.length()) logMsg("OTA rejected: %s\n", otaErr.c_str());
       }
-      if (len && Update.write(data, len) != len) { Update.printError(Serial); return; }
+      if (otaErr.length()) return;
+      if (len && Update.write(data, len) != len) {
+        otaErr = String("Write failed: ") + Update.errorString();
+        logMsg("OTA %s\n", otaErr.c_str());
+        Update.abort();
+        return;
+      }
       if (final) {
-        if (Update.end(true)) Serial.printf("OTA OK: %u bytes\n", index + len);
-        else Update.printError(Serial);
+        if (Update.end(true)) {
+          otaOk = true;
+          logMsg("OTA OK: %u bytes\n", index + len);
+        } else {
+          otaErr = String("Verify failed: ") + Update.errorString();
+          logMsg("OTA %s\n", otaErr.c_str());
+        }
       }
     }
   );
@@ -2924,6 +3008,7 @@ void setup()
 {
   Serial.begin(115200);
   Serial.printf("\n\nBedside Clock v%s\n", FW_VERSION);
+  bootGuardCheck();  // first: roll back if this firmware keeps crashing
   delay(200);
 
   pinMode(BOOT_BTN_PIN, INPUT_PULLUP);
@@ -3056,6 +3141,8 @@ void setup()
 // ==========================================================================
 void loop()
 {
+  bootGuardMarkHealthy();
+
   // During file upload, skip ALL display and SD activity to keep SPI bus free
   if (uploadInProgress) {
     uploadIdleWatchdog();  // abort if the client went away, so the clock can't freeze
