@@ -581,9 +581,66 @@ String htmlAttrEscape(const String &s);
 // ==========================================================================
 //  Audio playback
 // ==========================================================================
+#define ALARM_MIN_VOLUME  10   // a ringing alarm is never quieter than this (%)
+
 void applyVolume() {
-  if (audioOut) audioOut->SetGain((float)alarmVolume / 100.0f);
+  int v = alarmVolume;
+  if (alarmFiring && v < ALARM_MIN_VOLUME) v = ALARM_MIN_VOLUME;
+  if (audioOut) audioOut->SetGain((float)v / 100.0f);
 }
+
+// ==========================================================================
+//  Fallback alarm tone — used when the MP3 can't be played (no SD card,
+//  missing or broken file), so a ringing alarm is never silent.
+//  Invariant: I2S is running iff (mp3Player is playing) or toneActive.
+//  AudioOutputI2S::begin() asserts if the channel already exists, so the tone
+//  only starts after stopAlarmSound() has released the MP3 player.
+// ==========================================================================
+#define TONE_RATE        16000   // samples/s
+#define TONE_HALF_PERIOD 4       // samples → 2 kHz square wave
+#define TONE_AMPLITUDE   12000
+static bool     toneActive = false;
+static uint32_t toneSample = 0;
+
+void stopAlarmSound();
+
+void stopFallbackTone() {
+  if (!toneActive) return;
+  audioOut->stop();
+  toneActive = false;
+  applyVolume();
+}
+
+void startFallbackTone() {
+  if (toneActive || !audioOut) return;
+  stopAlarmSound();  // releases any MP3 player (and its I2S channel)
+  audioOut->SetChannels(2);
+  audioOut->SetRate(TONE_RATE);
+  int v = alarmVolume < 30 ? 30 : alarmVolume;
+  audioOut->SetGain((float)v / 100.0f);
+  if (!audioOut->begin()) return;
+  toneActive = true;
+  toneSample = 0;
+  audioPlaying = true;
+  logMsg("Alarm: MP3 unavailable, playing fallback tone\n");
+}
+
+// Feed the I2S DMA without blocking: "beep-beep" (120 ms on/off) once a second
+void loopFallbackTone() {
+  if (!toneActive) return;
+  for (int n = 0; n < 1024; n++) {
+    uint32_t ms = (toneSample % TONE_RATE) * 1000UL / TONE_RATE;  // position within the 1 s pattern
+    bool on = (ms < 120) || (ms >= 240 && ms < 360);
+    int16_t v = on ? (((toneSample / TONE_HALF_PERIOD) & 1) ? TONE_AMPLITUDE : -TONE_AMPLITUDE) : 0;
+    int16_t smp[2] = { v, v };
+    if (!audioOut->ConsumeSample(smp)) break;  // DMA full — continue next loop
+    toneSample++;
+  }
+}
+
+// Alarm MP3 that dies right after starting (corrupt file) → switch to the tone
+static uint32_t alarmMp3StartedAt = 0;
+static int      alarmMp3QuickEnds = 0;
 
 void initAudio() {
   audioOut = new AudioOutputI2S();
@@ -592,7 +649,8 @@ void initAudio() {
 }
 
 void startAlarmSound() {
-  if (!sdCardOk || alarmSound.length() == 0) return;
+  alarmMp3QuickEnds = 0;
+  if (!sdCardOk || alarmSound.length() == 0) { startFallbackTone(); return; }
   stopAlarmSound();
   applyVolume();
   mp3Source = new AudioFileSourceSD(alarmSound.c_str());
@@ -600,12 +658,14 @@ void startAlarmSound() {
   mp3Player = new AudioGeneratorMP3();
   if (mp3Player->begin(mp3Buffer, audioOut)) {
     audioPlaying = true;
+    alarmMp3StartedAt = millis();
     Serial.printf("Alarm playing: %s\n", alarmSound.c_str());
   } else {
     Serial.println("Failed to start MP3");
     delete mp3Player; mp3Player = nullptr;
     delete mp3Buffer; mp3Buffer = nullptr;
     delete mp3Source; mp3Source = nullptr;
+    startFallbackTone();
   }
 }
 
@@ -620,6 +680,7 @@ void stopAlarmSound() {
   if (mp3Source) {
     delete mp3Source; mp3Source = nullptr;
   }
+  stopFallbackTone();
   audioPlaying = false;
   testPlaying = false;
 }
@@ -666,6 +727,8 @@ void loopAudio() {
     applyVolume();
   }
 
+  loopFallbackTone();
+
   if (mp3Player && mp3Player->isRunning()) {
     if (!mp3Player->loop()) {
       // MP3 ended — clean up
@@ -674,12 +737,21 @@ void loopAudio() {
       delete mp3Buffer; mp3Buffer = nullptr;
       delete mp3Source; mp3Source = nullptr;
       if (alarmFiring) {
-        // Restart loop for alarm
+        // Restart loop for alarm — unless the file keeps ending immediately
+        // (corrupt/unreadable), then fall back to the built-in tone
+        if (millis() - alarmMp3StartedAt < 1500) alarmMp3QuickEnds++;
+        else alarmMp3QuickEnds = 0;
+        if (alarmMp3QuickEnds >= 3) {
+          audioPlaying = false;
+          startFallbackTone();
+          return;
+        }
         delay(50);  // brief pause before restarting
         mp3Source = new AudioFileSourceSD(alarmSound.c_str());
         mp3Buffer = new AudioFileSourceBuffer(mp3Source, 2048);
         mp3Player = new AudioGeneratorMP3();
         if (mp3Player->begin(mp3Buffer, audioOut)) {
+          alarmMp3StartedAt = millis();
           Serial.println("Alarm MP3 looping...");
         } else {
           Serial.println("Failed to restart alarm MP3");
@@ -687,6 +759,7 @@ void loopAudio() {
           delete mp3Buffer; mp3Buffer = nullptr;
           delete mp3Source; mp3Source = nullptr;
           audioPlaying = false;
+          startFallbackTone();
         }
       } else {
         // Test or other — just stop
