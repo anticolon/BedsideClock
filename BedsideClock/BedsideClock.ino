@@ -231,6 +231,11 @@ bool webEnabled = true;  // web config interface on/off
 DNSServer dnsServer;
 
 bool captivePortalRunning = false;
+bool portalForced = false;   // portal opened on purpose (BOOT hold) — never auto-leave it
+
+#define WIFI_CONNECT_TIMEOUT_MS  20000                 // boot-time connect attempt
+#define PORTAL_WIFI_RETRY_MS     (2UL * 60 * 1000)     // fallback portal: retry saved WiFi this often
+#define WIFI_KEEPALIVE_MS        60000                 // clock mode: reconnect check interval
 bool clockMode = false;
 String savedSSID, savedPASS, scannedOptionsHTML;
 
@@ -258,7 +263,9 @@ volatile bool audioReqDismiss   = false;
 volatile bool audioReqVolume    = false;  // apply volume change from main loop
 volatile bool uiReqAlarmLabel   = false;  // request alarm label refresh from main loop
 volatile bool uploadInProgress  = false;  // true while receiving file upload chunks
-volatile bool uploadError       = false;  // set on SD write failure during upload
+volatile uint32_t uploadLastActivity = 0; // millis() of last upload body callback (idle watchdog)
+volatile bool reqRescanMP3      = false;  // request MP3 list rescan from main loop
+volatile bool reqLocationApply  = false;  // apply new location (TZ + weather) from main loop
 
 // ==========================================================================
 //  Alarm settings (saved in Preferences)
@@ -2073,6 +2080,11 @@ String fileManagerPage() {
   html += "  var offset=0;";
   html += "  var total=f.size;";
   html += "  var retries=0;";
+  // On final failure, tell the clock to drop the partial file
+  html += "  function fail(msg){";
+  html += "    stat.textContent=msg;stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';";
+  html += "    fetch('/files/upload_abort',{method:'POST'}).catch(function(){});";
+  html += "  }";
   html += "  function sendChunk(){";
   html += "    var end=Math.min(offset+CHUNK,total);";
   html += "    var blob=f.slice(offset,end);";
@@ -2085,9 +2097,11 @@ String fileManagerPage() {
   html += "    xhr.setRequestHeader('Content-Type','application/octet-stream');";
   html += "    xhr.onload=function(){";
   html += "      if(xhr.status!=200){";
+  // 4xx (bad name, out of sync, too large) won't fix itself — don't retry
+  html += "        if(xhr.status>=400&&xhr.status<500){fail('Upload failed: '+xhr.responseText);return;}";
   html += "        retries++;";
   html += "        if(retries<=3){stat.textContent='Retry '+retries+'/3...';stat.style.color='#FFcc44';setTimeout(sendChunk,1000);return;}";
-  html += "        stat.textContent='Upload failed: '+xhr.responseText;stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';return;";
+  html += "        fail('Upload failed: '+xhr.responseText);return;";
   html += "      }";
   html += "      retries=0;offset=end;";
   html += "      bar.style.width=Math.round(offset*100/total)+'%';";
@@ -2096,8 +2110,8 @@ String fileManagerPage() {
   html += "        setTimeout(function(){location.reload();},500);";
   html += "      }else{sendChunk();}";
   html += "    };";
-  html += "    xhr.ontimeout=function(){retries++;if(retries<=3){setTimeout(sendChunk,1000);return;}stat.textContent='Timed out';stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';};";
-  html += "    xhr.onerror=function(){retries++;if(retries<=3){setTimeout(sendChunk,1000);return;}stat.textContent='Upload failed';stat.style.color='#c0392b';btn.disabled=false;btn.textContent='Upload';};";
+  html += "    xhr.ontimeout=function(){retries++;if(retries<=3){setTimeout(sendChunk,1000);return;}fail('Timed out');};";
+  html += "    xhr.onerror=function(){retries++;if(retries<=3){setTimeout(sendChunk,1000);return;}fail('Upload failed');};";
   html += "    xhr.send(blob);";
   html += "  }";
   html += "  sendChunk();";
@@ -2162,11 +2176,100 @@ String fileManagerPage() {
 }
 
 // ==========================================================================
+//  Chunked upload state — shared by the /files/upload body handler (AsyncTCP
+//  task) and the idle watchdog in loop(). Guarded by uploadMutex.
+// ==========================================================================
+#define UPLOAD_BUF_SIZE         32768   // max body size of one chunk request
+#define UPLOAD_IDLE_TIMEOUT_MS  20000   // abort upload if no data arrives for this long
+
+static SemaphoreHandle_t uploadMutex = nullptr;
+static File     uploadFile;
+static String   uploadFilename;
+static size_t   uploadBytesWritten  = 0;
+static size_t   uploadExpectedTotal = 0;
+static uint8_t *uploadBuf           = nullptr;  // RAM buffer for one chunk
+static size_t   uploadBufPos        = 0;
+static bool     uploadChunkSkip     = false;    // chunk was already written (client retry)
+static int      uploadStatus        = 200;      // HTTP status for the current chunk request
+static const char *uploadStatusMsg  = "OK";
+static String   uploadLastDoneName;             // last completed upload (to ack a retried final chunk)
+static size_t   uploadLastDoneSize  = 0;
+
+// Close the upload, optionally delete the partial file, free the buffer.
+// Caller must hold uploadMutex.
+static void uploadCleanupLocked(bool removePartial, const char *reason) {
+  if (uploadFile) uploadFile.close();
+  uploadFile = File();
+  if (removePartial && uploadFilename.length() > 0 && sdCardOk) {
+    SD.remove(uploadFilename.c_str());
+  }
+  if (reason) logMsg("Upload aborted (%s): %s\n", reason, uploadFilename.c_str());
+  if (uploadBuf) { free(uploadBuf); uploadBuf = nullptr; }
+  uploadBufPos = 0;
+  uploadBytesWritten = 0;
+  uploadExpectedTotal = 0;
+  uploadFilename = "";
+  uploadInProgress = false;
+}
+
+static void uploadFailLocked(int status, const char *msg, bool abortUpload) {
+  uploadStatus = status;
+  uploadStatusMsg = msg;
+  if (abortUpload && uploadInProgress) uploadCleanupLocked(true, msg);
+  else logMsg("Upload: %s\n", msg);
+}
+
+// Called from loop(): abort an upload whose client went away.
+void uploadIdleWatchdog() {
+  if (!uploadInProgress || !uploadMutex) return;
+  if (millis() - uploadLastActivity < UPLOAD_IDLE_TIMEOUT_MS) return;
+  if (xSemaphoreTake(uploadMutex, 0) != pdTRUE) return;  // body handler busy — try next loop
+  if (uploadInProgress && millis() - uploadLastActivity >= UPLOAD_IDLE_TIMEOUT_MS) {
+    uploadCleanupLocked(true, "timed out");
+    reqRescanMP3 = true;
+  }
+  xSemaphoreGive(uploadMutex);
+}
+
+// URL-decode, strip path/illegal characters, require .mp3. Returns "" if unusable.
+static String sanitizeUploadName(const String &raw) {
+  String decoded;
+  for (unsigned int i = 0; i < raw.length(); i++) {
+    if (raw[i] == '%' && i + 2 < raw.length()) {
+      char hex[3] = { raw[i+1], raw[i+2], 0 };
+      decoded += (char)strtol(hex, NULL, 16);
+      i += 2;
+    } else {
+      decoded += raw[i];
+    }
+  }
+  String out;
+  for (unsigned int i = 0; i < decoded.length(); i++) {
+    char c = decoded[i];
+    if ((uint8_t)c < 0x20 || strchr("/\\:*?\"<>|", c)) continue;
+    out += c;
+  }
+  out.trim();
+  while (out.startsWith(".")) out.remove(0, 1);   // no hidden files or ".."
+  if (out.length() > 64) {
+    // Keep the extension; don't cut in the middle of a UTF-8 sequence
+    unsigned int cut = 60;
+    while (cut > 0 && ((uint8_t)out[cut] & 0xC0) == 0x80) cut--;
+    out = out.substring(0, cut) + out.substring(out.length() - 4);
+  }
+  String lower = out; lower.toLowerCase();
+  if (out.length() <= 4 || !lower.endsWith(".mp3")) return "";
+  return out;
+}
+
+// ==========================================================================
 //  Setup shared web endpoints (settings + OTA) — used in both modes
 // ==========================================================================
 void setupSettingsEndpoints()
 {
   #define WEB_GUARD() if (!webEnabled) { r->send(403, "text/plain", "Web interface disabled"); return; }
+
+  if (!uploadMutex) uploadMutex = xSemaphoreCreateMutex();
 
   server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *r) {
     WEB_GUARD();
@@ -2175,21 +2278,28 @@ void setupSettingsEndpoints()
 
   server.on("/saveLocation", HTTP_POST, [](AsyncWebServerRequest *r) {
     WEB_GUARD();
-    if (r->hasParam("lat", true) && r->hasParam("lon", true)) {
-      cfgLat     = r->getParam("lat", true)->value().toFloat();
-      cfgLon     = r->getParam("lon", true)->value().toFloat();
-      cfgTzName  = r->getParam("tz", true)->value();
-      cfgCity    = r->getParam("city", true)->value();
-      cfgCountry = r->getParam("country", true)->value();
+    // Missing optional fields read as "" (getParam() returns NULL for them)
+    auto postParam = [r](const char *name) -> String {
+      const AsyncWebParameter *p = r->getParam(name, true);
+      return p ? p->value() : String();
+    };
+    float lat = postParam("lat").toFloat();
+    float lon = postParam("lon").toFloat();
+    if (r->hasParam("lat", true) && r->hasParam("lon", true) &&
+        lat >= -90.0f && lat <= 90.0f && lon >= -180.0f && lon <= 180.0f) {
+      cfgLat     = lat;
+      cfgLon     = lon;
+      cfgTzName  = postParam("tz");
+      cfgCity    = postParam("city");
+      cfgCountry = postParam("country");
 
       if (cfgTzName.length() == 0) cfgTzName = "auto";
 
       saveLocationSettings();
 
-      // Apply new timezone, re-sync NTP, and fetch weather immediately
-      applyTimezone();
-      fetchWeather();
-      update_weather_display();
+      // Apply new timezone and fetch weather from the main loop — a blocking
+      // HTTPS request here would stall the AsyncTCP task (watchdog reset)
+      reqLocationApply = true;
 
       String h = "<!DOCTYPE html><html><body style='font-family:Arial;text-align:center;padding:40px;background:#111;color:#eee;'>";
       h += "<h2 style='color:#28a745;'>Location Saved!</h2>";
@@ -2199,7 +2309,7 @@ void setupSettingsEndpoints()
       h += "</body></html>";
       r->send(200, "text/html", h);
     } else {
-      r->send(400, "text/plain", "Missing parameters");
+      r->send(400, "text/plain", "Missing or invalid lat/lon");
     }
   });
 
@@ -2339,134 +2449,137 @@ void setupSettingsEndpoints()
   // File upload — chunked binary via JS, received by body handler (4th param).
   // We use custom chunking instead of multipart because ESPAsyncWebServer's
   // multipart handler has heap issues with large (5MB+) files on ESP32.
-  // TCP delivers ~974 byte fragments. We buffer them in RAM and write to SD
-  // in one 32KB block per chunk to minimize SD write calls and speed up uploads.
-  // loop() is completely bypassed during upload (uploadInProgress flag).
-  static File uploadFile;
-  static String uploadFilename;
-  static size_t uploadBytesWritten;
-  static size_t uploadExpectedTotal;
-
-  // RAM buffer for accumulating TCP fragments before writing to SD
-  #define UPLOAD_BUF_SIZE 32768
-  static uint8_t *uploadBuf = nullptr;
-  static size_t uploadBufPos = 0;
-
+  // Each request carries one chunk (<= UPLOAD_BUF_SIZE) plus X-Filename,
+  // X-Offset and X-Total headers. TCP delivers ~974 byte fragments; we buffer
+  // them in RAM and write the chunk to SD in one go. The file handle stays open
+  // across chunks; loop() skips display/SD work while uploadInProgress, and its
+  // idle watchdog aborts the upload if the client disappears.
   server.on("/files/upload", HTTP_POST,
     // Response handler — fires after body is complete
     [](AsyncWebServerRequest *r) {
-      if (uploadError) {
-        uploadError = false;
-        logMsg("Upload: ERROR response sent\n");
-        r->send(500, "text/plain", "SD write error");
-      } else {
-        r->send(200, "text/plain", "OK");
-      }
+      WEB_GUARD();
+      if (!sdCardOk) { r->send(500, "text/plain", "No SD card"); return; }
+      if (r->contentLength() == 0) { r->send(400, "text/plain", "Empty chunk"); return; }
+      xSemaphoreTake(uploadMutex, portMAX_DELAY);
+      int st = uploadStatus;
+      const char *msg = uploadStatusMsg;
+      xSemaphoreGive(uploadMutex);
+      r->send(st, "text/plain", msg);
     },
     NULL,  // no multipart handler
     // Body handler — receives raw binary POST body
     [](AsyncWebServerRequest *r, uint8_t *data, size_t len, size_t index, size_t total) {
-      if (!webEnabled || !sdCardOk) return;
-      if (uploadError) return;
+      if (!webEnabled || !sdCardOk) return;  // response handler reports the error
+      xSemaphoreTake(uploadMutex, portMAX_DELAY);
+      uploadLastActivity = millis();
 
-      // First callback of each HTTP request
+      // First callback of each HTTP request: validate headers, open/resume the file
       if (index == 0) {
-        uploadError = false;
-        String fname = r->hasHeader("X-Filename") ? r->getHeader("X-Filename")->value() : "";
-        size_t offset = r->hasHeader("X-Offset") ? r->getHeader("X-Offset")->value().toInt() : 0;
-        size_t fileTotal = r->hasHeader("X-Total") ? r->getHeader("X-Total")->value().toInt() : 0;
-
-        // URL-decode filename
-        String decoded;
-        for (unsigned int i = 0; i < fname.length(); i++) {
-          if (fname[i] == '%' && i + 2 < fname.length()) {
-            char hex[3] = { fname[i+1], fname[i+2], 0 };
-            decoded += (char)strtol(hex, NULL, 16);
-            i += 2;
-          } else if (fname[i] == '+') {
-            decoded += ' ';
-          } else {
-            decoded += fname[i];
-          }
-        }
-        fname = decoded;
-
-        if (offset == 0 && !uploadFile) {
-          // First chunk of new upload — allocate buffer and open file
-          if (!uploadBuf) {
-            uploadBuf = (uint8_t *)malloc(UPLOAD_BUF_SIZE);
-            if (!uploadBuf) {
-              logMsg("Upload: FAILED to allocate buffer\n");
-              uploadError = true;
-              return;
-            }
-          }
-          uploadBufPos = 0;
-          uploadFilename = "/" + fname;
-          uploadBytesWritten = 0;
-          uploadExpectedTotal = fileTotal;
-          uploadInProgress = true;
-          logMsg("Upload start: %s (%u bytes expected)\n", uploadFilename.c_str(), fileTotal);
-          uploadFile = SD.open(uploadFilename, FILE_WRITE);
-          if (!uploadFile) {
-            logMsg("Upload: FAILED to create file\n");
-            uploadError = true;
-            return;
-          }
-        } else if (!uploadFile) {
-          logMsg("Upload: file handle lost at offset %u\n", offset);
-          uploadError = true;
-          return;
-        }
-        // Reset buffer for this chunk
+        uploadStatus = 200;
+        uploadStatusMsg = "OK";
+        uploadChunkSkip = false;
         uploadBufPos = 0;
+
+        String fname = sanitizeUploadName(r->hasHeader("X-Filename") ? r->getHeader("X-Filename")->value() : "");
+        size_t offset    = r->hasHeader("X-Offset") ? r->getHeader("X-Offset")->value().toInt() : 0;
+        size_t fileTotal = r->hasHeader("X-Total")  ? r->getHeader("X-Total")->value().toInt()  : 0;
+        String path = "/" + fname;
+
+        if (fname.length() == 0) {
+          uploadFailLocked(400, "Invalid filename (must be .mp3)", false);
+        } else if (total > UPLOAD_BUF_SIZE) {
+          uploadFailLocked(413, "Chunk too large", false);
+        } else if (offset == 0) {
+          // New upload — discard any stale one (client restarted or gave up)
+          if (uploadInProgress) uploadCleanupLocked(true, "superseded");
+          uploadBuf = (uint8_t *)malloc(UPLOAD_BUF_SIZE);
+          if (!uploadBuf) {
+            uploadFailLocked(500, "Out of memory", false);
+          } else {
+            uploadFilename = path;
+            uploadExpectedTotal = fileTotal;
+            uploadBytesWritten = 0;
+            uploadLastDoneName = "";
+            uploadInProgress = true;
+            logMsg("Upload start: %s (%u bytes expected)\n", path.c_str(), fileTotal);
+            uploadFile = SD.open(path, FILE_WRITE);
+            if (!uploadFile) uploadFailLocked(500, "Cannot create file", true);
+          }
+        } else if (!uploadInProgress) {
+          if (path == uploadLastDoneName && offset + total == uploadLastDoneSize) {
+            uploadChunkSkip = true;  // final chunk resent after we already finished
+          } else {
+            uploadFailLocked(409, "No upload in progress", false);
+          }
+        } else if (path != uploadFilename) {
+          uploadFailLocked(409, "Another upload is in progress", false);
+        } else if (offset < uploadBytesWritten) {
+          // Client missed our reply and resent a chunk we already wrote
+          if (offset + total == uploadBytesWritten) uploadChunkSkip = true;
+          else uploadFailLocked(409, "Chunk offset mismatch", true);
+        } else if (offset > uploadBytesWritten) {
+          uploadFailLocked(409, "Missing data before this chunk", true);
+        }
       }
 
-      if (uploadError) return;
+      if (uploadStatus != 200 || uploadChunkSkip || !uploadInProgress) {
+        xSemaphoreGive(uploadMutex);
+        return;
+      }
 
       // Accumulate data into RAM buffer
-      if (len > 0 && uploadBuf) {
-        memcpy(uploadBuf + uploadBufPos, data, len);
-        uploadBufPos += len;
+      if (uploadBufPos + len > UPLOAD_BUF_SIZE) {
+        uploadFailLocked(413, "Chunk too large", true);
+        xSemaphoreGive(uploadMutex);
+        return;
       }
+      memcpy(uploadBuf + uploadBufPos, data, len);
+      uploadBufPos += len;
 
       // Last TCP fragment for this HTTP request — write entire buffer to SD at once
       if ((index + len) == total) {
-        if (uploadFile && uploadBufPos > 0) {
-          size_t written = uploadFile.write(uploadBuf, uploadBufPos);
-          if (written != uploadBufPos) {
-            logMsg("Upload: SD write %u/%u\n", written, uploadBufPos);
-            uploadError = true;
-            uploadFile.close();
-            uploadFile = File();  // clear handle
-            uploadInProgress = false;
-            return;
-          }
-          uploadBytesWritten += written;
-          uploadFile.flush();
+        size_t written = uploadFile.write(uploadBuf, uploadBufPos);
+        if (written != uploadBufPos) {
+          logMsg("Upload: SD write %u/%u\n", written, uploadBufPos);
+          uploadFailLocked(500, "SD write error", true);
+          xSemaphoreGive(uploadMutex);
+          return;
         }
+        uploadBytesWritten += written;
+        uploadBufPos = 0;
+        uploadFile.flush();
 
-        // Check if this was the final chunk of the whole file
-        size_t offset = r->hasHeader("X-Offset") ? r->getHeader("X-Offset")->value().toInt() : 0;
-        if (offset + total >= uploadExpectedTotal) {
+        // Final chunk of the whole file?
+        if (uploadBytesWritten >= uploadExpectedTotal) {
           uploadFile.close();
-          uploadFile = File();  // clear handle
+          uploadFile = File();
 
           // Read back actual file size to verify
           File check = SD.open(uploadFilename, FILE_READ);
           size_t actualSize = 0;
           if (check) { actualSize = check.size(); check.close(); }
-
-          uploadInProgress = false;
           logMsg("Upload done: %s wrote=%u expect=%u ondisk=%u\n",
                  uploadFilename.c_str(), uploadBytesWritten, uploadExpectedTotal, actualSize);
 
-          if (uploadBuf) { free(uploadBuf); uploadBuf = nullptr; }
-          rescanMP3Files();
+          uploadLastDoneName = uploadFilename;
+          uploadLastDoneSize = uploadBytesWritten;
+          uploadCleanupLocked(false, NULL);
+          reqRescanMP3 = true;
         }
       }
+      xSemaphoreGive(uploadMutex);
     }
   );
+
+  // Abort an upload (client gave up) — closes and deletes the partial file
+  server.on("/files/upload_abort", HTTP_POST, [](AsyncWebServerRequest *r) {
+    WEB_GUARD();
+    xSemaphoreTake(uploadMutex, portMAX_DELAY);
+    if (uploadInProgress) uploadCleanupLocked(true, "client abort");
+    xSemaphoreGive(uploadMutex);
+    reqRescanMP3 = true;
+    r->send(200, "text/plain", "OK");
+  });
 
   // File delete
   server.on("/files/delete", HTTP_POST, [](AsyncWebServerRequest *r) {
@@ -2661,15 +2774,21 @@ void setupSettingsEndpoints()
 // ==========================================================================
 //  Config Portal (AP mode)
 // ==========================================================================
-void startConfigPortal()
+// forced = true when the user asked for setup (BOOT hold). Otherwise the portal
+// is a fallback because saved WiFi was unreachable, and portalWifiRetry() keeps
+// trying the saved network so the clock recovers on its own (e.g. after a power
+// cut where the router boots slower than the clock).
+void startConfigPortal(bool forced)
 {
-  WiFi.mode(WIFI_AP);
+  portalForced = forced;
+  bool canRetry = !forced && savedSSID.length() > 0;
+  WiFi.mode(canRetry ? WIFI_AP_STA : WIFI_AP);
   const char *apName = "BedsideClock-SETUP";
   WiFi.softAP(apName);
   delay(300);
   IPAddress ip = WiFi.softAPIP();
 
-  ui_set_status("AP MODE: OPEN PORTAL");
+  ui_set_status(canRetry ? "AP MODE (retrying WiFi)" : "AP MODE: OPEN PORTAL");
   ui_set_ip((String("SSID: ") + apName + "\nIP: " + ip.toString()).c_str());
   lv_update();
 
@@ -2716,6 +2835,60 @@ void startConfigPortal()
 
   dnsServer.start(53, "*", WiFi.softAPIP());
   captivePortalRunning = true;
+}
+
+// ==========================================================================
+//  WiFi recovery
+// ==========================================================================
+// Fallback portal: periodically retry the saved network (only while nobody is
+// connected to the AP) and reboot into clock mode once it is reachable again.
+void portalWifiRetry()
+{
+  if (portalForced || savedSSID.length() == 0) return;
+  static uint32_t lastTry = 0;
+  static bool trying = false;
+
+  if (trying) {
+    if (WiFi.status() == WL_CONNECTED) {
+      logMsg("Saved WiFi reachable again, restarting into clock mode\n");
+      ui_set_status("WiFi found!");
+      ui_set_ip("Restarting...");
+      lv_update();
+      delay(500);
+      ESP.restart();
+    }
+    if (millis() - lastTry > WIFI_CONNECT_TIMEOUT_MS) {
+      trying = false;
+      WiFi.disconnect(false);  // stop the STA attempt, keep the AP up
+    }
+    return;
+  }
+
+  if (millis() - lastTry < PORTAL_WIFI_RETRY_MS) return;
+  lastTry = millis();
+  if (WiFi.softAPgetStationNum() > 0) return;  // someone is configuring — leave the AP alone
+  logMsg("Portal: retrying saved WiFi '%s'\n", savedSSID.c_str());
+  WiFi.begin(savedSSID.c_str(), savedPASS.c_str());
+  trying = true;
+}
+
+// Clock mode: make sure we reconnect after a WiFi drop, and keep the IP label current.
+void clockWifiKeepAlive()
+{
+  static uint32_t lastCheck = 0;
+  static bool wasConnected = true;
+  bool connected = (WiFi.status() == WL_CONNECTED);
+
+  if (connected && !wasConnected) {
+    logMsg("WiFi reconnected: %s\n", WiFi.localIP().toString().c_str());
+    if (label_status) lv_label_set_text(label_status, WiFi.localIP().toString().c_str());
+  }
+  wasConnected = connected;
+
+  if (connected || millis() - lastCheck < WIFI_KEEPALIVE_MS) return;
+  lastCheck = millis();
+  logMsg("WiFi down, reconnecting\n");
+  WiFi.reconnect();
 }
 
 // ==========================================================================
@@ -2819,7 +2992,7 @@ void setup()
       ui_set_status("FORCED SETUP MODE");
       ui_set_ip("Starting portal...");
       lv_update(); delay(400);
-      startConfigPortal();
+      startConfigPortal(true);
       return;
     }
   }
@@ -2834,7 +3007,7 @@ void setup()
     ui_set_status("Connecting WiFi...");
     ui_set_ip(savedSSID.c_str()); lv_update();
 
-    if (connectToWiFi(savedSSID.c_str(), savedPASS.c_str(), 8000)) {
+    if (connectToWiFi(savedSSID.c_str(), savedPASS.c_str(), WIFI_CONNECT_TIMEOUT_MS)) {
       Serial.println("WiFi connected, starting clock mode");
 
       // Apply timezone and sync NTP
@@ -2870,12 +3043,12 @@ void setup()
       return;
     } else {
       ui_set_status("WiFi Failed!");
-      ui_set_ip("Falling back to AP...");
+      ui_set_ip("Starting setup AP, will keep retrying");
       lv_update(); delay(1000);
     }
   }
 
-  startConfigPortal();
+  startConfigPortal(false);
 }
 
 // ==========================================================================
@@ -2885,14 +3058,22 @@ void loop()
 {
   // During file upload, skip ALL display and SD activity to keep SPI bus free
   if (uploadInProgress) {
+    uploadIdleWatchdog();  // abort if the client went away, so the clock can't freeze
     delay(1);
     return;
+  }
+
+  // Deferred SD rescan requested by async web handlers
+  if (reqRescanMP3) {
+    reqRescanMP3 = false;
+    rescanMP3Files();
   }
 
   lv_timer_handler();
 
   if (captivePortalRunning) {
     dnsServer.processNextRequest();
+    portalWifiRetry();
   }
 
   if (clockMode) {
@@ -2911,8 +3092,11 @@ void loop()
         updateAlarmLabel();
       }
 
-      // Encoder short-press: snooze if ringing, ignore during snooze
-      if (alarmFiring && encoderShortPress()) {
+      // Encoder short-press: snooze if ringing, otherwise ignore.
+      // Always consume the press — a tap during snooze must not stay latched,
+      // or it would instantly re-snooze the alarm when the snooze ends.
+      bool shortPress = encoderShortPress();
+      if (shortPress && alarmFiring) {
         snoozeAlarm();
       }
 
@@ -2924,9 +3108,6 @@ void loop()
           menuOpen();
         }
       }
-
-      // Consume unused presses when not in alarm state
-      if (!alarmFiring && !alarmSnoozing) encoderShortPress();
     }
 
     // Audio processing (always runs — also handles async web commands)
@@ -2937,6 +3118,17 @@ void loop()
       uiReqAlarmLabel = false;
       updateAlarmLabel();
     }
+
+    // New location saved from the web — apply TZ and refresh weather here,
+    // not in the AsyncTCP task (blocking HTTPS + LVGL are unsafe there)
+    if (reqLocationApply) {
+      reqLocationApply = false;
+      applyTimezone();
+      fetchWeather();
+      update_weather_display();
+    }
+
+    clockWifiKeepAlive();
 
     // Check alarm trigger
     checkAlarm();
