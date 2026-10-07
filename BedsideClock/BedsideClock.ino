@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.1.0-rc1"
+#define FW_VERSION "1.1.0-rc2"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -576,6 +576,7 @@ void initSDCard() {
 // ==========================================================================
 void dismissAlarm();
 void updateAlarmLabel();
+String htmlAttrEscape(const String &s);
 
 // ==========================================================================
 //  Audio playback
@@ -745,7 +746,7 @@ void snoozeAlarm() {
 
 void checkSnooze() {
   if (!alarmSnoozing) return;
-  if (millis() >= snoozeEndTime) {
+  if ((long)(millis() - snoozeEndTime) >= 0) {  // wrap-safe (millis() rolls over every ~49.7 days)
     // Snooze expired — alarm fires again
     alarmSnoozing = false;
     alarmFiring = true;
@@ -765,7 +766,8 @@ void updateAlarmLabel() {
   } else if (alarmSnoozing) {
     // Show countdown
     unsigned long remaining = 0;
-    if (millis() < snoozeEndTime) remaining = snoozeEndTime - millis();
+    long left = (long)(snoozeEndTime - millis());  // wrap-safe
+    if (left > 0) remaining = left;
     int secLeft = remaining / 1000;
     int m = secLeft / 60;
     int s = secLeft % 60;
@@ -790,9 +792,22 @@ void updateAlarmLabel() {
 // ==========================================================================
 //  Rotary Encoder reading (rotation via ISR, button polled here)
 // ==========================================================================
+#define ENC_SW_DEBOUNCE_MS 20
+
 void readEncoder() {
-  // Button state (polled — no need for ISR on a slow human press)
-  bool pressed = (digitalRead(ENC_SW) == LOW);
+  // Button state (polled — no need for ISR on a slow human press).
+  // Debounced: a new level only counts once it has been stable for
+  // ENC_SW_DEBOUNCE_MS, so contact bounce can't produce double presses.
+  static bool rawLevel = false;
+  static uint32_t rawSince = 0;
+  bool raw = (digitalRead(ENC_SW) == LOW);
+  if (raw != rawLevel) {
+    rawLevel = raw;
+    rawSince = millis();
+  }
+  if (millis() - rawSince < ENC_SW_DEBOUNCE_MS) return;
+
+  bool pressed = rawLevel;
   if (pressed && !encSwPressed) {
     encSwDownTime = millis();
     encSwHandled = false;
@@ -992,6 +1007,8 @@ void updateMenuValue(int item) {
 
 void menuOpen() {
   if (menuActive) return;
+  consumeEncoderDelta();  // drop rotation made on the clock screen
+  encAccum = 0;
   menuActive = true;
   buildMenuUI();
   Serial.println("Menu opened");
@@ -999,6 +1016,11 @@ void menuOpen() {
 
 void menuClose() {
   if (!menuActive) return;
+  // Leaving with a long press while editing: keep (and persist) the new value
+  if (menuEditing) {
+    if (menuCursor == 0) saveLocationSettings();
+    if (menuCursor >= 1 && menuCursor <= 5) saveAlarmSettings();
+  }
   menuActive = false;
   menuEditing = false;
   if (testPlaying) stopTestSound();
@@ -1537,7 +1559,7 @@ String settingsPage()
   html += "</style></head><body><div class='box'>";
   html += "<h2>Location Settings</h2>";
   html += "<p style='color:#aaa;font-size:13px;'>Current: <b style='color:#fff;'>";
-  html += cfgCity + ", " + cfgCountry;
+  html += htmlAttrEscape(cfgCity) + ", " + htmlAttrEscape(cfgCountry);
   html += "</b> (" + String(cfgLat, 2) + ", " + String(cfgLon, 2) + ")</p>";
 
   html += "<form id='locForm'>";
@@ -1598,6 +1620,7 @@ String settingsPage()
   // JavaScript
   html += "<script>";
   html += "let cities=[];";
+  html += "function esc(t){return String(t).replace(/[&<>\"']/g,function(c){return '&#'+c.charCodeAt(0)+';';});}";
 
   // Search on Enter key
   html += "document.getElementById('cityInput').addEventListener('keydown',function(e){";
@@ -1639,7 +1662,7 @@ String settingsPage()
   html += "      let h='';";
   html += "      cities.forEach((c,i)=>{";
   html += "        const label=c.name+(c.admin1?' ('+c.admin1+')':'')+(country?'':' - '+c.country);";
-  html += "        h+='<div id=\"cr'+(i+1)+'\" class=\"cr\" onclick=\"pick('+(i+1)+')\" style=\"padding:10px 12px;border-bottom:1px solid #333;background:#222;cursor:pointer;\">'+label+'</div>';";
+  html += "        h+='<div id=\"cr'+(i+1)+'\" class=\"cr\" onclick=\"pick('+(i+1)+')\" style=\"padding:10px 12px;border-bottom:1px solid #333;background:#222;cursor:pointer;\">'+esc(label)+'</div>';";
   html += "      });";
   html += "      res.innerHTML=h;";
   html += "    }";
@@ -1779,7 +1802,7 @@ String clockHomePage()
   html += ".toggle input:checked+.slider:before{transform:translateX(24px);background:#fff;}";
   html += "</style></head><body><div class='box'>";
   html += "<h2>Bedside Clock <span style='font-size:12px;color:#555;'>v" + String(FW_VERSION) + "</span></h2>";
-  html += "<p style='color:#aaa;'>Location: <b style='color:#fff;'>" + cfgCity + ", " + cfgCountry + "</b></p>";
+  html += "<p style='color:#aaa;'>Location: <b style='color:#fff;'>" + htmlAttrEscape(cfgCity) + ", " + htmlAttrEscape(cfgCountry) + "</b></p>";
   if (weatherValid) {
     char t[16]; snprintf(t, sizeof(t), "%.0f&deg;C", weatherTemp);
     html += "<p style='color:#aaa;'>Weather: <b style='color:#fff;'>" + String(t) + ", " + wmoDescription(weatherCode) + "</b></p>";
@@ -1820,14 +1843,15 @@ String clockHomePage()
   html += "<label>Alarm Sound</label>";
   html += "<select id='alarmSound' style='margin-bottom:6px;'>";
   if (!sdCardOk) {
-    html += "<option>No SD card</option>";
+    html += "<option value=''>No SD card</option>";
   } else if (mp3FileCount == 0) {
-    html += "<option>No MP3 files found</option>";
+    html += "<option value=''>No MP3 files found</option>";
   } else {
     for (int i = 0; i < mp3FileCount; i++) {
-      html += "<option value='" + mp3Files[i] + "'";
+      String esc = htmlAttrEscape(mp3Files[i]);
+      html += "<option value='" + esc + "'";
       if (mp3Files[i] == alarmSound) html += " selected";
-      html += ">" + mp3Files[i] + "</option>";
+      html += ">" + esc + "</option>";
     }
   }
   html += "</select>";
@@ -2130,8 +2154,9 @@ String fileManagerPage() {
       html += "<div class='file-row'>";
       html += "<span class='file-name" + String(isActive ? " active" : "") + "'>" + safeName + "</span>";
       html += "<span class='file-size'>" + sizeStr + "</span>";
-      html += "<a class='btn-dl' href='#' onclick=\"dlFile('" + safeName + "');return false;\">Download</a>";
-      html += "<button class='btn-del' onclick=\"delFile('" + safeName + "')\">Delete</button>";
+      // Name goes in data-name (HTML-escaped) — never spliced into a JS string
+      html += "<a class='btn-dl' href='#' data-name='" + safeName + "' onclick='dlFile(this);return false;'>Download</a>";
+      html += "<button class='btn-del' data-name='" + safeName + "' onclick='delFile(this)'>Delete</button>";
       html += "</div>";
     }
   }
@@ -2201,8 +2226,8 @@ String fileManagerPage() {
   html += "  sendChunk();";
   html += "}";
 
-  html += "function dlFile(name){";
-  html += "  var btn=event.target;";
+  html += "function dlFile(btn){";
+  html += "  var name=btn.dataset.name;";
   html += "  var origText=btn.textContent;";
   html += "  btn.style.pointerEvents='none';btn.style.opacity='0.7';";
   html += "  var xhr=new XMLHttpRequest();";
@@ -2228,7 +2253,8 @@ String fileManagerPage() {
   html += "  xhr.send();";
   html += "}";
 
-  html += "function delFile(name){";
+  html += "function delFile(btn){";
+  html += "  var name=btn.dataset.name;";
   html += "  if(!confirm('Delete '+name+'?'))return;";
   html += "  var xhr=new XMLHttpRequest();";
   html += "  xhr.open('POST','/files/delete',true);";
@@ -2387,7 +2413,7 @@ void setupSettingsEndpoints()
 
       String h = "<!DOCTYPE html><html><body style='font-family:Arial;text-align:center;padding:40px;background:#111;color:#eee;'>";
       h += "<h2 style='color:#28a745;'>Location Saved!</h2>";
-      h += "<p>" + cfgCity + ", " + cfgCountry + "</p>";
+      h += "<p>" + htmlAttrEscape(cfgCity) + ", " + htmlAttrEscape(cfgCountry) + "</p>";
       h += "<p>(" + String(cfgLat, 4) + ", " + String(cfgLon, 4) + ")</p>";
       h += "<p style='margin-top:20px;'><a href='/' style='color:#7cf;'>Back</a></p>";
       h += "</body></html>";
@@ -2419,8 +2445,12 @@ void setupSettingsEndpoints()
       String t = r->getParam("time")->value();
       int colon = t.indexOf(':');
       if (colon > 0) {
-        alarmHour = t.substring(0, colon).toInt();
-        alarmMinute = t.substring(colon + 1).toInt();
+        int h = t.substring(0, colon).toInt();
+        int m = t.substring(colon + 1).toInt();
+        if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+          alarmHour = h;
+          alarmMinute = m;
+        }
       }
     }
     if (r->hasParam("on")) {
@@ -2431,7 +2461,11 @@ void setupSettingsEndpoints()
     }
     if (r->hasParam("sound")) {
       String newSound = r->getParam("sound")->value();
-      if (newSound != alarmSound) {
+      // Only accept a file we actually have. "" (placeholder option when there
+      // is no SD card / no files) is ignored so the saved tune isn't wiped.
+      bool known = false;
+      for (int i = 0; i < mp3FileCount && !known; i++) known = (mp3Files[i] == newSound);
+      if (known && newSound != alarmSound) {
         alarmSound = newSound;
         // Stop test if playing a different song now (handled by main loop)
         if (testPlaying) audioReqTestStop = true;
@@ -2500,34 +2534,11 @@ void setupSettingsEndpoints()
     if (!fname.startsWith("/")) fname = "/" + fname;
     Serial.printf("Download request: [%s]\n", fname.c_str());
     if (!SD.exists(fname.c_str())) { r->send(404, "text/plain", "File not found"); return; }
-    
-    File f = SD.open(fname.c_str(), FILE_READ);
-    if (!f) { r->send(500, "text/plain", "Cannot open file"); return; }
-    size_t fSize = f.size();
-    f.close();
-
-    String dlName = fname;
-    if (dlName.startsWith("/")) dlName = dlName.substring(1);
-
-    // Use beginResponse with File object — pass opened file directly
-    File *pf = new File(SD.open(fname.c_str(), FILE_READ));
-    if (!*pf) { delete pf; r->send(500, "text/plain", "Cannot open file"); return; }
-
-    Serial.printf("Serving: %s (%u bytes)\n", fname.c_str(), fSize);
-
-    AsyncWebServerResponse *resp = r->beginChunkedResponse("audio/mpeg",
-      [pf](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
-        if (!*pf || pf->available() == 0) {
-          pf->close();
-          delete pf;
-          return 0;
-        }
-        size_t chunk = min(maxLen, (size_t)1024);
-        return pf->read(buffer, chunk);
-      });
-    resp->addHeader("Content-Disposition", "attachment; filename=\"" + dlName + "\"");
-    resp->addHeader("Content-Length", String(fSize));
-    r->send(resp);
+    // The library owns the File and closes it when the response ends or the
+    // client disconnects (the old hand-rolled chunked reader leaked a handle
+    // per cancelled download; SD allows only 5 open files). Also sets a proper
+    // Content-Length and Content-Disposition.
+    r->send(r->beginResponse(SD, fname, "audio/mpeg", true));
   });
 
   // File upload — chunked binary via JS, received by body handler (4th param).
@@ -3167,12 +3178,16 @@ void loop()
     // Read encoder every loop (must be fast for reliable reading)
     readEncoder();
 
+    // Alarm went off while the menu was open: close it so the next tap snoozes
+    if (menuActive && alarmFiring) menuClose();
+
     // Menu handling
     if (menuActive) {
       menuHandleInput();
       // Don't update clock display while menu is open
     } else {
       update_clock_display();
+      consumeEncoderDelta();  // rotation does nothing here — don't let it pile up for the menu
 
       // Update snooze countdown display every loop
       if (alarmSnoozing) {
@@ -3208,7 +3223,7 @@ void loop()
 
     // New location saved from the web — apply TZ and refresh weather here,
     // not in the AsyncTCP task (blocking HTTPS + LVGL are unsafe there)
-    if (reqLocationApply) {
+    if (reqLocationApply && !alarmFiring && !audioPlaying) {
       reqLocationApply = false;
       applyTimezone();
       fetchWeather();
@@ -3223,8 +3238,10 @@ void loop()
     // Check snooze expiry
     checkSnooze();
 
-    // Periodic weather refresh (skip during file upload to avoid SD/network contention)
-    if (!uploadInProgress && millis() - lastWeatherFetch > WEATHER_INTERVAL_MS) {
+    // Periodic weather refresh. fetchWeather() blocks for seconds, so never run
+    // it while the alarm rings or audio plays (the 2 KB audio buffer would run
+    // dry and button presses would be missed) — it runs once playback stops.
+    if (!alarmFiring && !audioPlaying && millis() - lastWeatherFetch > WEATHER_INTERVAL_MS) {
       fetchWeather();
       update_weather_display();
     }
