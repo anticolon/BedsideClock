@@ -334,7 +334,7 @@ The clock displays the time, date, current weather icon, temperature, and daily 
 **Via the web interface:** Open the clock's IP in a browser, set the hour and minute with the dropdown selectors, and toggle the switch to arm. You can also select the alarm sound, adjust volume, and test playback.
 
 ### Weekly Schedule (Advanced)
-On the web page, switch on **Weekly schedule**. It replaces the single alarm with one row per weekday (Monday to Sunday). Each row has an active switch, a time and a song. *Default* uses the **Default Sound** selected below the schedule. The first time you switch it on, every day starts with the current alarm time, inactive, so you opt in day by day. Volume and snooze are shared.
+On the web page, switch on **Weekly schedule**. It replaces the single alarm with an overview of the week (Monday to Sunday): each day shows its time, song and an active switch. Tap a day (or its letter in the week strip) to set its time (24-hour) and song; *Done* closes it. *Default* uses the **Default Sound** selected below the schedule. The first time you switch it on, every day starts with the current alarm time, inactive, so you opt in day by day. Volume and snooze are shared.
 
 - Active days ring every week. Unlike the single alarm, they don't switch off after ringing
 - If a day's song is deleted, that day falls back to the default sound (and to the built-in beep if that is missing too)

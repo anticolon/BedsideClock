@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.2.0-rc2"
+#define FW_VERSION "1.2.0-rc3"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -1766,12 +1766,21 @@ const char SCHED_CSS[] PROGMEM =
   ".grp{color:#777;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin:16px 2px 4px;}"
   ".day{background:#202020;border:1px solid #2a2a2a;border-left:4px solid #333;border-radius:12px;padding:10px 12px;margin:8px 0;transition:border-color .3s,background .3s;}"
   ".day.on{border-left-color:#28a745;background:#1e2620;}"
-  ".day.ok{border-color:#7cf;}"
-  ".dh{display:flex;align-items:center;gap:10px;}"
-  ".dh b{flex:1;color:#fff;font-size:15px;}"
-  ".day input[type=time]{width:auto;margin:0;padding:6px 10px;font-size:20px;font-weight:bold;background:#151515;border-color:#333;color-scheme:dark;}"
-  ".day select{margin:8px 0 0;padding:8px 10px;font-size:13px;background:#151515;border-color:#333;}"
-  ".day:not(.on) input[type=time],.day:not(.on) select{opacity:.45;}";
+  ".day.sel{border-color:#7cf;}"
+  ".day.ok .tm{color:#7cf;}"
+  ".dh{display:flex;align-items:center;gap:10px;cursor:pointer;}"
+  ".dh div{flex:1;min-width:0;}"
+  ".dh b{color:#fff;font-size:15px;}"
+  ".tm{color:#fff;font-size:22px;font-weight:bold;font-variant-numeric:tabular-nums;transition:color .3s;}"
+  ".sub{color:#888;font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}"
+  ".day:not(.on) .tm,.day:not(.on) .sub{opacity:.45;}"
+  ".week span{cursor:pointer;}"
+  ".ed{margin-top:10px;padding-top:10px;border-top:1px solid #333;}"
+  ".tp{display:flex;align-items:center;justify-content:center;gap:8px;}"
+  ".tp select{width:96px;margin:0;font-size:26px;font-weight:bold;text-align:center;text-align-last:center;background:#151515;}"
+  ".tp span{color:#fff;font-size:26px;font-weight:bold;}"
+  ".ed>select{margin:10px 0 0;font-size:14px;background:#151515;}"
+  ".ed button{margin-top:10px;padding:10px;}";
 
 // ==========================================================================
 //  HTML — WiFi Config Page
@@ -2232,21 +2241,38 @@ String clockHomePage()
     html += "];";
     html += "const DN=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'],ORD=[1,2,3,4,5,6,0];";
     html += "const p2=n=>('0'+n).slice(-2),SF=[...g('alarmSound').options].map(o=>o.value).filter(v=>v);";
-    html += "function wk(){g('wk').innerHTML=ORD.map(d=>'<span'+(g('on'+d).checked?\" class='on'\":'')+'>'+DN[d][0]+'</span>').join('');}";
-    html += "ORD.forEach(d=>{const c=SC[d],e=document.createElement('div');";
+    html += "SC.forEach(c=>{c[3]=c[3]>=0?SF[c[3]]:'';});";
+    html += "const snd=v=>'\\u266A '+(v?v.replace(/^\\//,''):'Default sound');";
+    html += "let cur=-1;";
+    html += "function opts(n){let o='';for(let i=0;i<n;i++)o+='<option value='+i+'>'+p2(i)+'</option>';return o;}";
+    html += "const ed=document.createElement('div');ed.className='ed';";
+    html += "ed.innerHTML=\"<div class='tp'><select id='eh'>\"+opts(24)+\"</select><span>:</span><select id='em'>\"+opts(60)+\"</select></div>\";";
+    html += "const es=g('alarmSound').cloneNode(true);es.id='es';";
+    html += "[...es.options].forEach(o=>{if(!o.value)o.remove();else o.text=snd(o.value);});";
+    html += "es.insertBefore(new Option(snd(''),''),es.firstChild);ed.appendChild(es);";
+    html += "const dn=document.createElement('button');dn.className='btnSave';dn.textContent='Done';dn.onclick=()=>edit(cur);ed.appendChild(dn);";
+    html += "function wk(){g('wk').innerHTML=ORD.map(d=>\"<span data-d='\"+d+\"'\"+(SC[d][0]?\" class='on'\":'')+'>'+DN[d][0]+'</span>').join('');}";
+    html += "function show(d){const c=SC[d],e=g('c'+d);e.classList.toggle('on',!!c[0]);";
+    html += "g('tm'+d).textContent=p2(c[1])+':'+p2(c[2]);g('sn'+d).textContent=snd(c[3]);wk();}";
+    html += "ORD.forEach(d=>{const e=document.createElement('div');";
     html += "if(d==1||d==6){const h=document.createElement('div');h.className='grp';h.textContent=d==1?'Weekdays':'Weekend';g('days').appendChild(h);}";
-    html += "e.className='day'+(c[0]?' on':'');e.id='c'+d;";
-    html += "e.innerHTML=\"<div class='dh'><b>\"+DN[d]+\"</b><input type='time' id='t\"+d+\"' value='\"+p2(c[1])+':'+p2(c[2])+\"' required>\"";
-    html += "+\"<label class='toggle'><input type='checkbox' id='on\"+d+\"'\"+(c[0]?' checked':'')+\"><span class='slider'></span></label></div>\";";
-    html += "const s=g('alarmSound').cloneNode(true);s.id='s'+d;";
-    html += "[...s.options].forEach(o=>{if(!o.value)o.remove();else o.text='\\u266A '+o.text.replace(/^\\//,'');});";
-    html += "s.insertBefore(new Option('\\u266A Default sound',''),s.firstChild);s.value=c[3]>=0?SF[c[3]]:'';";
-    html += "e.appendChild(s);g('days').appendChild(e);});";
-    html += "wk();";
-    html += "g('days').addEventListener('change',e=>{const d=e.target.id.replace(/\\D/g,''),c=g('c'+d),t=g('t'+d).value;";
-    html += "if(!t)return;c.classList.toggle('on',g('on'+d).checked);wk();";
-    html += "fetch('/alarm/sched?d='+d+'&on='+(g('on'+d).checked?1:0)+'&time='+t+'&sound='+encodeURIComponent(g('s'+d).value))";
-    html += ".then(r=>r.text()).then(r=>{g('schedSt').textContent=r;c.classList.add('ok');setTimeout(()=>c.classList.remove('ok'),700);});});";
+    html += "e.className='day';e.id='c'+d;";
+    html += "e.innerHTML=\"<div class='dh'><div><b>\"+DN[d]+\"</b><div class='sub' id='sn\"+d+\"'></div></div><span class='tm' id='tm\"+d+\"'></span>\"";
+    html += "+\"<label class='toggle'><input type='checkbox' id='on\"+d+\"'\"+(SC[d][0]?' checked':'')+\"><span class='slider'></span></label></div>\";";
+    html += "g('days').appendChild(e);show(d);});";
+    html += "function edit(d){if(cur>=0)g('c'+cur).classList.remove('sel');";
+    html += "if(d==cur||d<0){cur=-1;ed.remove();return;}";
+    html += "cur=d;const c=SC[d],e=g('c'+d);e.classList.add('sel');e.appendChild(ed);";
+    html += "g('eh').value=c[1];g('em').value=c[2];es.value=c[3];}";
+    html += "function save(d){const c=SC[d];show(d);";
+    html += "fetch('/alarm/sched?d='+d+'&on='+c[0]+'&time='+p2(c[1])+':'+p2(c[2])+'&sound='+encodeURIComponent(c[3]))";
+    html += ".then(r=>r.text()).then(r=>{g('schedSt').textContent=r;const e=g('c'+d);e.classList.add('ok');setTimeout(()=>e.classList.remove('ok'),700);});}";
+    html += "g('days').addEventListener('click',e=>{const c=e.target.closest('.day');";
+    html += "if(!c||e.target.closest('.ed,.toggle'))return;edit(+c.id.slice(1));});";
+    html += "g('wk').addEventListener('click',e=>{const d=e.target.dataset.d;if(d!==undefined&&+d!=cur)edit(+d);});";
+    html += "g('days').addEventListener('change',e=>{const t=e.target.id;";
+    html += "if(t.startsWith('on')){const d=+t.slice(2);SC[d][0]=e.target.checked?1:0;save(d);}";
+    html += "else if(cur>=0){const c=SC[cur];c[1]=+g('eh').value;c[2]=+g('em').value;c[3]=es.value;save(cur);}});";
   }
   html += "</script>";
 
