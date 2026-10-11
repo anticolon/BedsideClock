@@ -286,11 +286,11 @@ If you don't want to set up the Arduino IDE and compile the firmware yourself, y
 
 - A **Chrome** or **Edge** browser (Web Serial is not supported in Firefox or Safari)
 - A **USB-C cable** connected to the Waveshare ESP32-C6 board
-- The merged firmware `.bin` file from the [`/Firmware`](https://github.com/anticolon/BedsideClock/tree/main/Firmware) folder in this repo
+- The merged firmware `.bin` file from the [latest release](https://github.com/anticolon/BedsideClock/releases/latest)
 
 #### Steps
 
-1. Download the latest `BedsideClock_vX.X_merged.bin` from the [`/Firmware`](https://github.com/anticolon/BedsideClock/tree/main/Firmware) folder
+1. Download `BedsideClock.vX.X.X.merged.bin` from the [latest release](https://github.com/anticolon/BedsideClock/releases/latest) (under **Assets**)
 2. Open the [**Espressif Web Flasher**](https://espressif.github.io/esptool-js/) in Chrome or Edge
 3. Click **Connect** and select the port for your ESP32-C6
 4. In the **Program** section, enter **`0x0`** in the Flash Address field
@@ -305,7 +305,7 @@ If you don't want to set up the Arduino IDE and compile the firmware yourself, y
 
 #### Updating Firmware Later
 
-Once the clock is on your WiFi, go to the web UI → **Firmware Update** page and upload the **app-only** `.bin` file (not the merged binary). The merged binary is only needed for the initial USB flash.
+Once the clock is on your WiFi, go to the web UI → **Firmware Update** page and upload the **app-only** `BedsideClock.vX.X.X.app.bin` from the [latest release](https://github.com/anticolon/BedsideClock/releases/latest) (not the merged binary). The merged binary is only needed for the initial USB flash.
 
 ### 4. First Boot — WiFi Configuration
 1. The clock starts in **AP mode** and creates a WiFi access point
