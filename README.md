@@ -85,7 +85,7 @@ A responsive, dark-themed web interface accessible from any device on the same n
 - **Manage Sound Files** — Upload new MP3 files to the SD card with a progress bar, download files with live progress on the button, view file list with file sizes, delete unwanted files, wipe entire SD card with double confirmation, see SD card usage statistics
 - **Location Settings** — Search for your city using the Open-Meteo Geocoding API, timezone is set automatically
 - **Firmware Update** — OTA (Over-The-Air) firmware updates with upload progress bar, automatic reboot detection, and redirect to home page when the device comes back online
-- **Web access control** — Enable/disable the entire web interface from the on-screen menu to prevent unauthorized access. When disabled, all endpoints return `403 Forbidden`. OTA updates and the AP config portal remain accessible for recovery.
+- **Web access control** — Enable/disable the entire web interface from the on-screen menu to prevent unauthorized access. When disabled, all endpoints return `403 Forbidden`, including OTA firmware updates. To update again, switch *Webpage* back on in the menu. The BOOT-hold setup portal keeps OTA open for recovery.
 
 ### Captive Portal Setup (AP Mode)
 - On first boot (or when no WiFi credentials are saved), the clock creates its own WiFi access point
@@ -356,7 +356,7 @@ Safety features (from v1.1.0):
 - If a new firmware crashes 3 times in a row shortly after booting, the clock automatically switches back to the firmware it was running before the update
 
 ### Disabling the Web Interface
-For security, you can disable the web interface from the on-screen menu. Navigate to *Webpage* and press to toggle it off. When disabled, all web requests return `403 Forbidden`. The setting persists across reboots. OTA firmware updates and the AP captive portal are not affected, so you can always recover access.
+For security, you can disable the web interface from the on-screen menu. Navigate to *Webpage* and press to toggle it off. When disabled, all web requests return `403 Forbidden`. The setting persists across reboots. Firmware updates are blocked too, so switch *Webpage* back on before an OTA update. The BOOT-hold setup portal (hold BOOT 5 s) always allows OTA, so you can still recover if the menu is unusable.
 
 ### Re-entering WiFi Setup
 Hold the **BOOT button** (GPIO9) for 5 seconds — a progress bar appears at the bottom of the screen showing the hold duration. The clock restarts in AP mode for WiFi reconfiguration.
@@ -389,8 +389,8 @@ The same message persists through snooze cycles — a fresh random pick happens 
 
 ## Changelog
 
-### v1.1.0 (release candidate — code review fixes)
-- **OTA safety** — Automatic rollback to the previous firmware after 3 consecutive crash boots; OTA accepts only ESP32-C6 app images; interrupted updates no longer block the next one; real error messages on the update page
+### v1.1.0 (code review fixes)
+- **OTA safety** — Firmware update is closed while *Webpage* is Off (open in the BOOT-hold setup portal); automatic rollback to the previous firmware after 3 consecutive crash boots; OTA accepts only ESP32-C6 app images; interrupted updates no longer block the next one; real error messages on the update page
 - **Uploads can't freeze the clock** — Every error path cleans up; an idle watchdog aborts uploads whose client disappeared (20 s); new `/files/upload_abort` endpoint used by the page on failure; chunk size is bounds-checked; resent chunks are acknowledged instead of being appended twice; filenames are sanitised
 - **Snooze fix** — A tap during the snooze countdown no longer instantly re-snoozes the next ring
 - **WiFi recovery** — Fallback setup AP keeps retrying the saved network and returns to clock mode; clock mode reconnects after WiFi drops; longer boot connect timeout (20 s)

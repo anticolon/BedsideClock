@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.1.0-rc3"
+#define FW_VERSION "1.1.0"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -2115,9 +2115,15 @@ bool connectToWiFi(const char *ssid, const char *pass, uint32_t timeoutMs)
 // ==========================================================================
 //  OTA Endpoints
 // ==========================================================================
+// OTA is closed while the Webpage is switched Off in the menu (decision D1).
+// Recovery: switch Webpage back On in the menu, or hold BOOT 5 s for the setup
+// portal (physical access), which keeps OTA open.
+static bool otaAllowed() { return webEnabled || portalForced; }
+
 void setupOTAEndpoints()
 {
   server.on("/update", HTTP_GET, [](AsyncWebServerRequest *r) {
+    if (!otaAllowed()) { r->send(403, "text/plain", "Web interface disabled"); return; }
     r->send(200, "text/html", otaPage());
   });
   // Unguarded liveness check — the OTA page polls it to detect the reboot
@@ -2128,6 +2134,7 @@ void setupOTAEndpoints()
   static String otaErr;
   server.on("/doUpdate", HTTP_POST,
     [](AsyncWebServerRequest *r) {
+      if (!otaAllowed()) { r->send(403, "text/plain", "Web interface disabled"); return; }
       if (otaOk) {
         r->send(200, "text/plain", "OK");
         delay(1500);
@@ -2142,6 +2149,11 @@ void setupOTAEndpoints()
         otaErr = "";
         logMsg("OTA start: %s\n", filename.c_str());
         if (Update.isRunning()) Update.abort();  // a previous attempt was interrupted
+        if (!otaAllowed()) {
+          otaErr = "Web interface disabled";
+          logMsg("OTA rejected: web interface disabled\n");
+          return;
+        }
         // Only accept an ESP32-C6 application image: image magic 0xE9, chip id
         // 0x000D, and the app descriptor magic 0xABCD5432 at offset 0x20.
         // The merged USB .bin starts with the bootloader instead — writing that
