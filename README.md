@@ -405,6 +405,7 @@ The same message persists through snooze cycles — a fresh random pick happens 
 - Menu **Alarm** skips the next scheduled alarm; the display shows the next alarm with its weekday
 - An alarm caught up just after midnight uses the previous day's settings
 - Deleting a file that a scheduled day uses resets that day to the default sound
+- Refreshed web interface: every page uses the same card-based dark design (section cards, menu list, rounded controls, 24-hour pickers)
 
 ### v1.1.0 (code review fixes)
 - **OTA safety** — Firmware update is closed while *Webpage* is Off (open in the BOOT-hold setup portal); automatic rollback to the previous firmware after 3 consecutive crash boots; OTA accepts only ESP32-C6 app images; interrupted updates no longer block the next one; real error messages on the update page

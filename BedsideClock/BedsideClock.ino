@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.2.0-rc5"
+#define FW_VERSION "1.2.0-rc6"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -1742,61 +1742,99 @@ void fetchWeather()
 //  HTML — Shared CSS
 // ==========================================================================
 const char CSS[] PROGMEM =
-  "body{font-family:Arial;background:#111;color:#eee;padding:20px;}"
-  "h2{color:#7cf;}"
-  "input,select{width:100%;padding:12px;margin:6px 0;border-radius:8px;"
-  "border:1px solid #444;background:#222;color:#fff;box-sizing:border-box;}"
-  "button{width:100%;padding:12px;margin-top:10px;border:none;border-radius:8px;"
-  "color:#fff;font-size:16px;cursor:pointer;}"
-  ".btnSave{background:#28a745;} .btnClear{background:#c0392b;} .btnBlue{background:#007bff;}"
-  ".box{max-width:420px;margin:auto;background:#1b1b1b;padding:20px;border-radius:12px;}"
+  ":root{color-scheme:dark;}"
+  "body{font-family:-apple-system,system-ui,Arial,sans-serif;background:#111;color:#eee;margin:0;padding:16px;}"
+  ".box{max-width:420px;margin:auto;}"
+  "h2{color:#7cf;font-size:22px;margin:8px 0 14px;}h2 small{color:#555;font-size:12px;font-weight:normal;}"
+  ".card{background:#1b1b1b;border:1px solid #262626;border-radius:14px;padding:14px;margin:12px 0;}"
+  ".card h3{color:#777;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin:0 0 10px;}"
+  ".warn{background:#2a1515;border-color:#6b2a22;}"
+  "label{display:block;margin:10px 0 4px;font-size:13px;color:#aaa;}"
+  "input,select{width:100%;padding:12px;margin:4px 0;border-radius:10px;border:1px solid #333;background:#151515;"
+  "color:#fff;font-size:15px;box-sizing:border-box;}"
+  "button,.btn{display:block;width:100%;padding:12px;margin-top:10px;border:none;border-radius:10px;background:#2a2a2a;"
+  "color:#fff;font-size:15px;font-weight:bold;text-align:center;cursor:pointer;box-sizing:border-box;}"
+  "button:disabled{opacity:.5;cursor:default;}"
+  ".btnSave{background:#28a745;}.btnClear{background:#c0392b;}.btnBlue{background:#007bff;}"
+  ".sm{display:inline-block;width:auto;margin:0;padding:7px 12px;font-size:13px;border-radius:8px;}"
   "a{color:#7cf;text-decoration:none;}"
-  "label{display:block;margin-top:10px;font-size:14px;color:#aaa;}"
-  ".nav{text-align:center;margin:15px 0;}"
-  ".nav a{margin:0 10px;font-size:15px;}"
-  "#citySelect{min-height:44px;}"
+  ".muted{color:#888;font-size:13px;}"
+  ".badge{display:inline-block;background:#12324a;color:#7cf;border-radius:999px;padding:6px 14px;font-size:13px;margin:4px 0 10px;}"
+  ".srow{display:flex;align-items:center;justify-content:space-between;gap:12px;}"
+  ".srow b{display:block;color:#fff;font-size:15px;}.srow small{display:block;color:#888;font-size:12px;}"
+  ".sep{border-top:1px solid #262626;margin:14px -14px;}"
+  ".toggle{position:relative;display:inline-block;flex:none;width:52px;height:28px;margin:0;}"
+  ".toggle input{opacity:0;width:0;height:0;}"
+  ".toggle .slider{position:absolute;cursor:pointer;inset:0;background:#333;border-radius:28px;transition:.3s;}"
+  ".toggle .slider:before{content:'';position:absolute;height:22px;width:22px;left:3px;bottom:3px;background:#888;border-radius:50%;transition:.3s;}"
+  ".toggle input:checked+.slider{background:#28a745;}"
+  ".toggle input:checked+.slider:before{transform:translateX(24px);background:#fff;}"
+  ".tp{display:flex;align-items:center;justify-content:center;gap:8px;}"
+  ".tp select{width:96px;margin:0;font-size:26px;font-weight:bold;text-align:center;text-align-last:center;transition:color .3s;}"
+  ".tp span{color:#fff;font-size:26px;font-weight:bold;}"
+  ".menu a{display:flex;justify-content:space-between;padding:13px 2px;border-bottom:1px solid #262626;color:#eee;font-size:15px;}"
+  ".menu a:after{content:'\\203A';color:#555;}.menu a:last-child{border:0;}.menu .danger{color:#e74c3c;}"
+  ".back{display:block;text-align:center;margin:18px 0;}"
+  ".progress{height:8px;background:#333;border-radius:4px;margin:12px 0;overflow:hidden;display:none;}"
+  ".progress-bar{height:100%;width:0;background:#007bff;transition:width .2s;}"
+  ".status{color:#aaa;font-size:13px;min-height:18px;margin:8px 0;}"
   ".spin{display:none;color:#7cf;margin:8px 0;}";
 
-// Weekly schedule cards (home page, only sent while the schedule is on)
+// Weekly schedule (home page, only sent while the schedule is on)
 const char SCHED_CSS[] PROGMEM =
-  ".badge{display:inline-block;background:#12324a;color:#7cf;border-radius:999px;padding:6px 14px;font-size:13px;margin:4px 0 10px;}"
   ".week{display:flex;gap:5px;}"
   ".week span{flex:1;text-align:center;padding:7px 0;border-radius:10px;background:#222;color:#777;font-size:14px;font-weight:bold;"
   "cursor:pointer;border:2px solid transparent;transition:.3s;}"
   ".week span.on{background:#28a745;color:#fff;}"
   ".week span.sel{border-color:#7cf;}"
   ".week small{display:block;font-size:10px;font-weight:normal;margin-top:2px;opacity:.85;}"
-  ".day{background:#202020;border:1px solid #2a2a2a;border-left:4px solid #333;border-radius:12px;padding:12px;margin:10px 0;transition:border-color .3s,background .3s;}"
+  ".day{background:#202020;border:1px solid #2a2a2a;border-left:4px solid #333;border-radius:12px;padding:12px;margin:10px 0 0;transition:border-color .3s,background .3s;}"
   ".day.on{border-left-color:#28a745;background:#1e2620;}"
   ".dh{display:flex;align-items:center;gap:10px;margin-bottom:10px;}"
   ".dh b{flex:1;color:#fff;font-size:16px;}"
-  ".tp{display:flex;align-items:center;justify-content:center;gap:8px;}"
-  ".tp select{width:96px;margin:0;font-size:26px;font-weight:bold;text-align:center;text-align-last:center;background:#151515;transition:color .3s;}"
-  ".tp span{color:#fff;font-size:26px;font-weight:bold;}"
   ".day.ok .tp select{color:#7cf;}"
-  ".day>select{margin:10px 0 0;font-size:14px;background:#151515;}"
+  ".day>select{margin:10px 0 0;font-size:14px;}"
   ".day:not(.on) .tp,.day:not(.on)>select{opacity:.45;}";
+
+// Shared page head: doctype, viewport, title and the common stylesheet.
+// The caller adds its own CSS, then PAGE_BODY.
+#define PAGE_BODY "</style></head><body><div class='box'>"
+String pageHead(const char *title) {
+  String h;
+  h.reserve(4500);
+  h += "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>";
+  h += title;
+  h += "</title><style>";
+  h += FPSTR(CSS);
+  return h;
+}
+
+// Small one-card message page (saved, rebooting, errors)
+String msgPage(const char *title, const char *color, const String &body) {
+  String h = pageHead(title);
+  h += PAGE_BODY "<div class='card' style='text-align:center;'><h2 style='color:";
+  h += color;
+  h += ";'>";
+  h += title;
+  h += "</h2>" + body + "</div></div></body></html>";
+  return h;
+}
 
 // ==========================================================================
 //  HTML — WiFi Config Page
 // ==========================================================================
 String wifiConfigPage()
 {
-  String html;
-  html.reserve(5000);
-  html += "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
-  html += "<title>Bedside Clock</title><style>";
-  html += FPSTR(CSS);
-  html += "</style></head><body><div class='box'>";
-  html += "<h2>WiFi Setup</h2>";
-  html += "<form method='POST' action='/save'>";
-  html += "<label>Select Network</label><select name='ssid_select'>" + scannedOptionsHTML + "</select>";
+  String html = pageHead("Bedside Clock");
+  html.reserve(5500);
+  html += PAGE_BODY "<h2>WiFi Setup</h2>";
+  html += "<div class='card'><h3>Network</h3><form method='POST' action='/save'>";
+  html += "<label>Select network</label><select name='ssid_select'>" + scannedOptionsHTML + "</select>";
   html += "<label>Or type SSID manually</label><input name='ssid_manual' placeholder='SSID (optional)'>";
   html += "<label>Password</label><input name='pass' type='password' placeholder='WiFi password'>";
   html += "<button class='btnSave' type='submit'>Save &amp; Reboot</button></form>";
-  html += "<form method='POST' action='/clear'><button class='btnClear' type='submit'>Clear Saved WiFi</button></form>";
-  html += "<hr style='border:0;border-top:1px solid #333;margin:20px 0;'>";
-  html += "<div class='nav'><a href='/settings'>Location Settings</a> | <a href='/update'>Firmware Update</a></div>";
+  html += "<form method='POST' action='/clear'><button type='submit'>Clear Saved WiFi</button></form></div>";
+  html += "<div class='card menu'><a href='/settings'>Location Settings</a><a href='/update'>Firmware Update</a></div>";
   html += "</div></body></html>";
   return html;
 }
@@ -1808,18 +1846,16 @@ String wifiConfigPage()
 // ==========================================================================
 String settingsPage()
 {
-  String html;
-  html.reserve(8000);
-  html += "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
-  html += "<title>Location Settings</title><style>";
-  html += FPSTR(CSS);
-  html += "</style></head><body><div class='box'>";
-  html += "<h2>Location Settings</h2>";
-  html += "<p style='color:#aaa;font-size:13px;'>Current: <b style='color:#fff;'>";
+  String html = pageHead("Location Settings");
+  html.reserve(9000);
+  html += ".cr{padding:10px 12px;margin:4px 0;border-radius:8px;background:#202020;cursor:pointer;}";
+  html += ".cr.sel{background:#12324a;color:#7cf;}";
+  html += PAGE_BODY "<h2>Location Settings</h2>";
+  html += "<div class='card'><small class='muted'>Current location</small><div style='color:#fff;font-size:17px;font-weight:bold;margin-top:2px;'>";
   html += htmlAttrEscape(cfgCity) + ", " + htmlAttrEscape(cfgCountry);
-  html += "</b> (" + String(cfgLat, 2) + ", " + String(cfgLon, 2) + ")</p>";
+  html += "</div><small class='muted'>" + String(cfgLat, 2) + ", " + String(cfgLon, 2) + "</small></div>";
 
-  html += "<form id='locForm'>";
+  html += "<div class='card'><h3>Change location</h3><form id='locForm'>";
   html += "<label>Country</label>";
   html += "<select id='countrySelect'>";
   html += "<option value=''>-- Select Country --</option>";
@@ -1855,14 +1891,14 @@ String settingsPage()
   html += "<label>Search City</label>";
   html += "<div style='display:flex;gap:6px;'>";
   html += "<input id='cityInput' type='text' placeholder='Type city name...' autocomplete='off' style='flex:1;'>";
-  html += "<button type='button' class='btnBlue' onclick='searchCity()' style='width:auto;padding:12px 18px;margin:6px 0;'>Search</button>";
+  html += "<button type='button' class='btnBlue' onclick='searchCity()' style='width:auto;margin:4px 0;'>Search</button>";
   html += "</div>";
   html += "<p class='spin' id='spinner'>Searching...</p>";
   html += "<div id='results' style='max-height:200px;overflow-y:auto;'></div>";
   html += "<input type='hidden' id='selIdx' value=''>";
 
   html += "<button type='submit' class='btnSave' style='margin-top:16px;'>Save Location</button>";
-  html += "</form>";
+  html += "</form></div>";
 
   // Hidden form for POST
   html += "<form id='saveForm' method='POST' action='/saveLocation' style='display:none;'>";
@@ -1870,8 +1906,7 @@ String settingsPage()
   html += "<input name='tz' id='hTz'><input name='city' id='hCity'><input name='country' id='hCountry'>";
   html += "</form>";
 
-  html += "<hr style='border:0;border-top:1px solid #333;margin:20px 0;'>";
-  html += "<div class='nav'><a href='/'>Home</a> | <a href='/update'>Firmware Update</a></div>";
+  html += "<a class='back' href='/'>&#8249; Home</a>";
   html += "</div>";
 
   // JavaScript
@@ -1887,8 +1922,8 @@ String settingsPage()
   // Pick a result
   html += "function pick(i){";
   html += "  document.getElementById('selIdx').value=i;";
-  html += "  document.querySelectorAll('.cr').forEach(el=>el.style.background='#222');";
-  html += "  document.getElementById('cr'+i).style.background='#335';";
+  html += "  document.querySelectorAll('.cr').forEach(el=>el.classList.remove('sel'));";
+  html += "  document.getElementById('cr'+i).classList.add('sel');";
   html += "}";
 
   // Search function
@@ -1919,7 +1954,7 @@ String settingsPage()
   html += "      let h='';";
   html += "      cities.forEach((c,i)=>{";
   html += "        const label=c.name+(c.admin1?' ('+c.admin1+')':'')+(country?'':' - '+c.country);";
-  html += "        h+='<div id=\"cr'+(i+1)+'\" class=\"cr\" onclick=\"pick('+(i+1)+')\" style=\"padding:10px 12px;border-bottom:1px solid #333;background:#222;cursor:pointer;\">'+esc(label)+'</div>';";
+  html += "        h+='<div id=\"cr'+(i+1)+'\" class=\"cr\" onclick=\"pick('+(i+1)+')\">'+esc(label)+'</div>';";
   html += "      });";
   html += "      res.innerHTML=h;";
   html += "    }";
@@ -1952,23 +1987,15 @@ String settingsPage()
 // ==========================================================================
 String otaPage()
 {
-  String html;
-  html.reserve(3500);
-  html += "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
-  html += "<title>Firmware Update</title><style>";
-  html += FPSTR(CSS);
-  html += ".progress{width:100%;height:10px;background:#333;border-radius:5px;margin:12px 0;display:none;}";
-  html += ".progress-bar{height:100%;background:#007bff;border-radius:5px;width:0%;transition:width 0.2s;}";
-  html += ".status{color:#aaa;font-size:14px;margin:10px 0;min-height:20px;}";
-  html += "</style></head><body><div class='box'>";
-  html += "<h2>Firmware OTA Update</h2>";
-  html += "<p style='color:#555;font-size:13px;'>Current: v" + String(FW_VERSION) + "</p>";
-  html += "<input type='file' id='fwFile' accept='.bin'>";
+  String html = pageHead("Firmware Update");
+  html.reserve(7500);
+  html += PAGE_BODY "<h2>Firmware Update</h2>";
+  html += "<div class='card'><div class='badge'>Installed: v" FW_VERSION "</div>";
+  html += "<label>Firmware file (.app.bin)</label><input type='file' id='fwFile' accept='.bin'>";
   html += "<div class='progress' id='prog'><div class='progress-bar' id='progBar'></div></div>";
   html += "<p class='status' id='status'></p>";
-  html += "<button class='btnBlue' id='upBtn' onclick='doOTA()'>Upload Firmware</button>";
-  html += "<hr style='border:0;border-top:1px solid #333;margin:20px 0;'>";
-  html += "<div class='nav'><a href='/'>Home</a> | <a href='/settings'>Location</a></div>";
+  html += "<button class='btnBlue' id='upBtn' onclick='doOTA()'>Upload Firmware</button></div>";
+  html += "<a class='back' href='/'>&#8249; Home</a>";
   html += "</div>";
 
   html += "<script>";
@@ -2040,43 +2067,29 @@ String otaPage()
 // ==========================================================================
 String clockHomePage()
 {
-  String html;
-  html.reserve(7000);
-  html += "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
-  html += "<title>Bedside Clock</title><style>";
-  html += FPSTR(CSS);
+  String html = pageHead("Bedside Clock");
+  html.reserve(14000);
   html += ".slider-row{display:flex;align-items:center;gap:12px;margin:12px 0;}";
   html += ".slider-row input[type=range]{flex:1;height:6px;-webkit-appearance:none;background:#333;border-radius:3px;outline:none;}";
   html += ".slider-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:#7cf;cursor:pointer;}";
-  html += ".slider-row span{min-width:36px;text-align:right;color:#fff;font-size:14px;}";
-  html += ".alarm-row{display:flex;align-items:center;gap:10px;margin:8px 0;}";
-  html += ".alarm-row input[type=time]{padding:10px;border-radius:8px;border:1px solid #444;background:#222;color:#fff;font-size:18px;}";
-  html += ".toggle{position:relative;display:inline-block;width:52px;height:28px;}";
-  html += ".toggle input{opacity:0;width:0;height:0;}";
-  html += ".toggle .slider{position:absolute;cursor:pointer;inset:0;background:#333;border-radius:28px;transition:.3s;}";
-  html += ".toggle .slider:before{content:'';position:absolute;height:22px;width:22px;left:3px;bottom:3px;background:#888;border-radius:50%;transition:.3s;}";
-  html += ".toggle input:checked+.slider{background:#28a745;}";
-  html += ".toggle input:checked+.slider:before{transform:translateX(24px);background:#fff;}";
-  html += ".srow{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#222;border-radius:12px;padding:12px 14px;margin:12px 0 8px;}";
-  html += ".srow b{display:block;color:#fff;font-size:15px;}.srow small{color:#888;font-size:12px;}";
-  html += ".srow .toggle,.dh .toggle{margin:0;flex:none;}";
+  html += ".slider-row span{min-width:40px;text-align:right;color:#fff;font-size:14px;}";
   if (schedEnabled) html += FPSTR(SCHED_CSS);
-  html += "</style></head><body><div class='box'>";
-  html += "<h2>Bedside Clock <span style='font-size:12px;color:#555;'>v" + String(FW_VERSION) + "</span></h2>";
-  html += "<p style='color:#aaa;'>Location: <b style='color:#fff;'>" + htmlAttrEscape(cfgCity) + ", " + htmlAttrEscape(cfgCountry) + "</b></p>";
+  html += PAGE_BODY "<h2>Bedside Clock <small>v" FW_VERSION "</small></h2>";
+  html += "<div class='card'><small class='muted'>" + htmlAttrEscape(cfgCity) + ", " + htmlAttrEscape(cfgCountry) + "</small>";
   if (weatherValid) {
     char t[16]; snprintf(t, sizeof(t), "%.0f&deg;C", weatherTemp);
-    html += "<p style='color:#aaa;'>Weather: <b style='color:#fff;'>" + String(t) + ", " + wmoDescription(weatherCode) + "</b></p>";
+    html += "<div style='color:#fff;font-size:20px;font-weight:bold;margin-top:2px;'>" + String(t) + " &middot; " + wmoDescription(weatherCode) + "</div>";
   }
+  html += "</div>";
 
   // Alarm section
-  html += "<hr style='border:0;border-top:1px solid #333;margin:16px 0;'>";
-  html += "<label>Alarm</label>";
-  html += "<div class='alarm-row' id='single'";
+  html += "<div class='card'><h3>Alarm</h3>";
+  // Single alarm (hidden, not removed, while the schedule is on: the script still binds to it)
+  html += "<div id='single'";
   if (schedEnabled) html += " style='display:none;'";
-  html += ">";
+  html += "><div class='srow'><div class='tp'>";
   // Hour select (00-23)
-  html += "<select id='alarmH' style='width:70px;font-size:18px;text-align:center;'>";
+  html += "<select id='alarmH'>";
   for (int h = 0; h < 24; h++) {
     char hh[4]; snprintf(hh, sizeof(hh), "%02d", h);
     html += "<option value='" + String(h) + "'";
@@ -2084,23 +2097,21 @@ String clockHomePage()
     html += ">" + String(hh) + "</option>";
   }
   html += "</select>";
-  html += "<span style='color:#fff;font-size:20px;'>:</span>";
+  html += "<span>:</span>";
   // Minute select (00-59)
-  html += "<select id='alarmM' style='width:70px;font-size:18px;text-align:center;'>";
+  html += "<select id='alarmM'>";
   for (int m = 0; m < 60; m++) {
     char mm[4]; snprintf(mm, sizeof(mm), "%02d", m);
     html += "<option value='" + String(m) + "'";
     if (m == alarmMinute) html += " selected";
     html += ">" + String(mm) + "</option>";
   }
-  html += "</select>";
-  html += "<label class='toggle'><input type='checkbox' id='alarmOn'";
+  html += "</select></div>";
+  html += "<div style='text-align:center;'><label class='toggle'><input type='checkbox' id='alarmOn'";
   if (alarmEnabled) html += " checked";
-  html += "><span class='slider'></span></label>";
-  html += "<span style='color:#aaa;font-size:14px;' id='alarmStatus'>";
+  html += "><span class='slider'></span></label><div class='muted' id='alarmStatus' style='margin-top:4px;'>";
   html += alarmFiring ? "RINGING" : (alarmSnoozing ? "Snoozing" : (alarmEnabled ? "Armed" : "Off"));
-  html += "</span>";
-  html += "</div>";
+  html += "</div></div></div><div class='sep'></div></div>";
 
   // Weekly schedule (advanced). Day cards are built by the script below to keep the page small.
   html += "<div class='srow'><div><b>Weekly schedule</b><small>Own time and sound for each day</small></div>";
@@ -2111,10 +2122,12 @@ String clockHomePage()
     html += "<div class='badge' id='schedSt'>" + schedStatus() + "</div>";
     html += "<div class='week' id='wk'></div><div class='day' id='pane'></div>";
   }
+  html += "</div>";
 
   // Sound selection
-  html += schedEnabled ? "<label>Default Sound</label>" : "<label>Alarm Sound</label>";
-  html += "<select id='alarmSound' style='margin-bottom:6px;'>";
+  html += "<div class='card'><h3>Sound</h3>";
+  html += schedEnabled ? "<label>Default sound</label>" : "<label>Alarm sound</label>";
+  html += "<select id='alarmSound'>";
   if (!sdCardOk) {
     html += "<option value=''>No SD card</option>";
   } else if (mp3FileCount == 0) {
@@ -2130,14 +2143,14 @@ String clockHomePage()
   html += "</select>";
 
   // Volume slider
-  html += "<label>Alarm Volume</label>";
+  html += "<label>Volume</label>";
   html += "<div class='slider-row'>";
   html += "<input type='range' id='volSlider' min='0' max='100' value='" + String(alarmVolume) + "' oninput='volUpdate(this.value)'>";
   html += "<span id='volVal'>" + String(alarmVolume) + "%</span>";
   html += "</div>";
 
   // Test play/stop button
-  html += "<button class='btnBlue' id='testBtn' onclick='toggleTest()' style='margin-top:4px;margin-bottom:8px;'>";
+  html += "<button class='btnBlue' id='testBtn' onclick='toggleTest()'>";
   html += testPlaying ? "Stop Test" : "Play Test";
   html += "</button>";
 
@@ -2146,22 +2159,21 @@ String clockHomePage()
   } else if (alarmSnoozing) {
     html += "<button class='btnClear' onclick=\"fetch('/alarm/dismiss').then(()=>location.reload())\">Cancel Snooze</button>";
   }
-
-  html += "<hr style='border:0;border-top:1px solid #333;margin:16px 0;'>";
+  html += "</div>";
 
   // Brightness slider
-  html += "<label>Display Brightness</label>";
+  html += "<div class='card'><h3>Display</h3><label>Brightness</label>";
   html += "<div class='slider-row'>";
   html += "<input type='range' id='brSlider' min='5' max='255' value='" + String(cfgBrightness) + "' oninput='brUpdate(this.value)'>";
   html += "<span id='brVal'>" + String((int)(cfgBrightness * 100 / 255)) + "%</span>";
-  html += "</div>";
+  html += "</div></div>";
 
-  html += "<div class='nav' style='margin-top:20px;'>";
-  html += "<a href='/files'>Manage Sound Files</a><br><br>";
-  html += "<a href='/settings'>Location Settings</a><br><br>";
-  html += "<a href='/update'>Firmware Update</a><br><br>";
-  html += "<a href='/syslog'>System Log</a><br><br>";
-  html += "<a href='/factory' style='color:#c0392b;'>Factory Reset</a>";
+  html += "<div class='card menu'>";
+  html += "<a href='/files'>Sound Files</a>";
+  html += "<a href='/settings'>Location Settings</a>";
+  html += "<a href='/update'>Firmware Update</a>";
+  html += "<a href='/syslog'>System Log</a>";
+  html += "<a href='/factory' class='danger'>Factory Reset</a>";
   html += "</div></div>";
 
   html += "<script>";
@@ -2411,49 +2423,29 @@ String htmlAttrEscape(const String &s) {
 }
 
 String fileManagerPage() {
-  String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
-  html += "<title>Sound Files</title>";
-  html += "<style>";
-  html += "body{font-family:Arial,sans-serif;background:#111;color:#eee;margin:0;padding:20px;}";
-  html += ".wrap{max-width:400px;margin:0 auto;}";
-  html += "h2{color:#7CCFFF;margin-bottom:20px;}";
-  html += ".file-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#1a1a1a;border-radius:8px;margin-bottom:6px;}";
-  html += ".file-name{color:#eee;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;margin-right:10px;}";
-  html += ".file-size{color:#888;font-size:12px;margin-right:10px;white-space:nowrap;}";
-  html += ".btn-dl{background:#007bff;color:#fff;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;margin-right:6px;text-decoration:none;}";
-  html += ".btn-dl:hover{background:#0069d9;text-decoration:none;}";
-  html += ".btn-del{background:#c0392b;color:#fff;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;}";
-  html += ".btn-del:hover{background:#e74c3c;}";
-  html += ".upload-box{background:#1a1a1a;border:2px dashed #333;border-radius:10px;padding:20px;text-align:center;margin-bottom:20px;}";
-  html += ".upload-box input[type=file]{margin:10px 0;}";
-  html += ".btn-up{background:#27ae60;color:#fff;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-size:15px;width:100%;}";
-  html += ".btn-up:hover{background:#2ecc71;}";
-  html += ".btn-up:disabled{background:#555;cursor:not-allowed;}";
-  html += ".progress{width:100%;height:8px;background:#333;border-radius:4px;margin-top:10px;display:none;}";
-  html += ".progress-bar{height:100%;background:#27ae60;border-radius:4px;width:0%;transition:width 0.2s;}";
-  html += ".nav{text-align:center;margin-top:20px;}";
-  html += ".nav a{color:#7CCFFF;text-decoration:none;}";
-  html += ".status{color:#888;font-size:13px;margin-top:8px;}";
-  html += ".active{color:#FFcc44;}";
-  html += "</style></head><body><div class='wrap'>";
-  html += "<h2>Sound Files</h2>";
+  String html = pageHead("Sound Files");
+  html.reserve(9000);
+  html += ".frow{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid #262626;}.frow:last-of-type{border:0;}";
+  html += ".fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;}";
+  html += ".fn.active{color:#fc4;}.fs{color:#888;font-size:12px;white-space:nowrap;}";
+  html += ".drop{border:2px dashed #333;border-radius:12px;padding:12px;}";
+  html += PAGE_BODY "<h2>Sound Files</h2>";
 
   // Upload form
-  html += "<div class='upload-box'>";
-  html += "<p style='color:#aaa;margin:0 0 8px;'>Upload MP3 to SD card</p>";
+  html += "<div class='card'><h3>Upload MP3</h3><div class='drop'>";
   html += "<input type='file' id='fileIn' accept='.mp3'>";
-  html += "<div class='progress' id='prog'><div class='progress-bar' id='progBar'></div></div>";
+  html += "<div class='progress' id='prog'><div class='progress-bar' id='progBar' style='background:#28a745;'></div></div>";
   html += "<p class='status' id='upStatus'></p>";
-  html += "<button class='btn-up' id='upBtn' onclick='doUpload()'>Upload</button>";
-  html += "</div>";
+  html += "<button class='btnSave' id='upBtn' onclick='doUpload()'>Upload</button>";
+  html += "</div></div>";
 
   // File list
-  html += "<h3 style='color:#aaa;font-size:14px;margin-bottom:10px;'>Files on SD card (" + String(mp3FileCount) + ")</h3>";
+  html += "<div class='card'><h3>On the SD card (" + String(mp3FileCount) + ")</h3>";
 
   if (!sdCardOk) {
-    html += "<p style='color:#c0392b;'>SD card not available</p>";
+    html += "<p style='color:#e74c3c;'>SD card not available</p>";
   } else if (mp3FileCount == 0) {
-    html += "<p style='color:#888;'>No MP3 files found</p>";
+    html += "<p class='muted'>No MP3 files found</p>";
   } else {
     for (int i = 0; i < mp3FileCount; i++) {
       String fname = mp3Files[i];
@@ -2474,12 +2466,12 @@ String fileManagerPage() {
 
       String safeName = htmlAttrEscape(displayName);
 
-      html += "<div class='file-row'>";
-      html += "<span class='file-name" + String(isActive ? " active" : "") + "'>" + safeName + "</span>";
-      html += "<span class='file-size'>" + sizeStr + "</span>";
-      // Name goes in data-name (HTML-escaped) — never spliced into a JS string
-      html += "<a class='btn-dl' href='#' data-name='" + safeName + "' onclick='dlFile(this);return false;'>Download</a>";
-      html += "<button class='btn-del' data-name='" + safeName + "' onclick='delFile(this)'>Delete</button>";
+      html += "<div class='frow'>";
+      html += "<span class='fn" + String(isActive ? " active" : "") + "'>" + safeName + "</span>";
+      html += "<span class='fs'>" + sizeStr + "</span>";
+      // Name goes in data-name (HTML-escaped) - never spliced into a JS string
+      html += "<a class='btn sm btnBlue' href='#' data-name='" + safeName + "' onclick='dlFile(this);return false;'>Download</a>";
+      html += "<button class='sm btnClear' data-name='" + safeName + "' onclick='delFile(this)'>Delete</button>";
       html += "</div>";
     }
   }
@@ -2488,11 +2480,12 @@ String fileManagerPage() {
   if (sdCardOk) {
     uint64_t total = SD.totalBytes();
     uint64_t used = SD.usedBytes();
-    html += "<p style='color:#555;font-size:12px;margin-top:12px;'>SD: " + String((int)(used/1048576)) + " MB used / " + String((int)(total/1048576)) + " MB total</p>";
-    html += "<button style='background:#c0392b;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;margin-top:4px;' onclick=\"wipeCard()\">Wipe SD Card</button>";
+    html += "<div class='sep'></div><div class='srow'><span class='muted'>" + String((int)(used/1048576)) + " MB used of " + String((int)(total/1048576)) + " MB</span>";
+    html += "<button class='sm btnClear' onclick='wipeCard()'>Wipe SD Card</button></div>";
   }
+  html += "</div>";
 
-  html += "<div class='nav'><a href='/'>Back to Clock</a></div>";
+  html += "<a class='back' href='/'>&#8249; Back to Clock</a>";
   html += "</div>";
 
   // JavaScript
@@ -2755,12 +2748,10 @@ void setupSettingsEndpoints()
       // HTTPS request here would stall the AsyncTCP task (watchdog reset)
       reqLocationApply = true;
 
-      String h = "<!DOCTYPE html><html><body style='font-family:Arial;text-align:center;padding:40px;background:#111;color:#eee;'>";
-      h += "<h2 style='color:#28a745;'>Location Saved!</h2>";
-      h += "<p>" + htmlAttrEscape(cfgCity) + ", " + htmlAttrEscape(cfgCountry) + "</p>";
-      h += "<p>(" + String(cfgLat, 4) + ", " + String(cfgLon, 4) + ")</p>";
-      h += "<p style='margin-top:20px;'><a href='/' style='color:#7cf;'>Back</a></p>";
-      h += "</body></html>";
+      String body = "<p>" + htmlAttrEscape(cfgCity) + ", " + htmlAttrEscape(cfgCountry) + "</p>";
+      body += "<p class='muted'>" + String(cfgLat, 4) + ", " + String(cfgLon, 4) + "</p>";
+      body += "<a class='btn btnBlue' href='/'>Back</a>";
+      String h = msgPage("Location Saved", "#28a745", body);
       r->send(200, "text/html", h);
     } else {
       r->send(400, "text/plain", "Missing or invalid lat/lon");
@@ -3133,25 +3124,17 @@ void setupSettingsEndpoints()
   // Factory reset page
   server.on("/factory", HTTP_GET, [](AsyncWebServerRequest *r) {
     WEB_GUARD();
-    String html;
-    html.reserve(3000);
-    html += "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
-    html += "<title>Factory Reset</title><style>";
-    html += FPSTR(CSS);
-    html += "</style></head><body><div class='box'>";
-    html += "<h2 style='color:#c0392b;'>Factory Reset</h2>";
-    html += "<div style='background:#2a1515;border:1px solid #c0392b;border-radius:8px;padding:16px;margin-bottom:20px;'>";
-    html += "<p style='color:#ff6b6b;font-size:15px;margin:0 0 10px;font-weight:bold;'>This will permanently erase everything:</p>";
-    html += "<p style='color:#ccc;font-size:14px;margin:0 0 6px;'>&#x2022; All MP3 files on the SD card</p>";
-    html += "<p style='color:#ccc;font-size:14px;margin:0 0 6px;'>&#x2022; Alarm time, sound, volume, and snooze settings</p>";
-    html += "<p style='color:#ccc;font-size:14px;margin:0 0 6px;'>&#x2022; Location, timezone, and brightness settings</p>";
-    html += "<p style='color:#ccc;font-size:14px;margin:0 0 6px;'>&#x2022; WiFi network credentials</p>";
-    html += "<p style='color:#ff6b6b;font-size:14px;margin:12px 0 0;'>The device will reboot into AP setup mode. There is no undo and no backup.</p>";
-    html += "</div>";
+    String html = pageHead("Factory Reset");
+    html.reserve(6500);
+    html += PAGE_BODY "<h2 style='color:#e74c3c;'>Factory Reset</h2>";
+    html += "<div class='card warn'><b style='color:#ff6b6b;'>This permanently erases everything:</b>";
+    html += "<ul style='color:#ccc;font-size:14px;line-height:1.7;padding-left:20px;margin:10px 0;'>";
+    html += "<li>All MP3 files on the SD card</li><li>Alarm, weekly schedule, sound, volume and snooze settings</li>";
+    html += "<li>Location, timezone and brightness settings</li><li>WiFi network credentials</li></ul>";
+    html += "<small style='color:#ff6b6b;'>The clock reboots into setup (AP) mode. There is no undo and no backup.</small>";
     html += "<p class='status' id='status'></p>";
-    html += "<button class='btnClear' id='resetBtn' onclick='doReset()'>Factory Reset</button>";
-    html += "<hr style='border:0;border-top:1px solid #333;margin:20px 0;'>";
-    html += "<div class='nav'><a href='/'>Back to Clock</a></div>";
+    html += "<button class='btnClear' id='resetBtn' onclick='doReset()'>Factory Reset</button></div>";
+    html += "<a class='back' href='/'>&#8249; Back to Clock</a>";
     html += "</div>";
     html += "<script>";
     html += "function doReset(){";
@@ -3220,24 +3203,19 @@ void setupSettingsEndpoints()
   // Log viewer page
   server.on("/syslog", HTTP_GET, [](AsyncWebServerRequest *r) {
     WEB_GUARD();
-    r->send(200, "text/html",
-      "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
-      "<title>Log</title><style>"
-      "body{font-family:Arial;background:#111;color:#eee;padding:20px;max-width:600px;margin:auto;}"
-      "pre{background:#000;color:#0f0;padding:12px;border-radius:8px;font-size:11px;"
-      "white-space:pre-wrap;word-wrap:break-word;max-height:75vh;overflow-y:auto;}"
-      "a{color:#7cf;} .b{padding:10px 16px;border:none;border-radius:6px;color:#fff;cursor:pointer;margin:4px;font-size:14px;}"
-      "</style></head><body>"
-      "<h2 style='color:#7cf;'>System Log</h2>"
-      "<pre id='lp'>Loading...</pre>"
-      "<button class='b' style='background:#007bff;' onclick='fl()'>Refresh</button>"
-      "<button class='b' style='background:#c0392b;' onclick='cl()'>Clear</button>"
-      "<p style='margin-top:16px;'><a href='/'>Back to Clock</a></p>"
-      "<script>"
-      "function fl(){fetch('/syslog_data').then(function(r){return r.text();}).then(function(t){var p=document.getElementById('lp');p.textContent=t||'(empty)';p.scrollTop=p.scrollHeight;});}"
-      "function cl(){fetch('/syslog_clear').then(function(){fl();});}"
-      "fl();setInterval(fl,5000);"
-      "</script></body></html>");
+    String html = pageHead("System Log");
+    html += "pre{background:#0b0b0b;color:#8f8;border:1px solid #262626;border-radius:12px;padding:12px;font-size:11px;"
+            "white-space:pre-wrap;word-wrap:break-word;max-height:70vh;overflow-y:auto;margin:0;}"
+            ".box{max-width:600px;}";
+    html += PAGE_BODY "<h2>System Log</h2><pre id='lp'>Loading...</pre>"
+            "<div class='srow'><button class='btnBlue' onclick='fl()'>Refresh</button><button onclick='cl()'>Clear</button></div>"
+            "<a class='back' href='/'>&#8249; Back to Clock</a></div>"
+            "<script>"
+            "function fl(){fetch('/syslog_data').then(function(r){return r.text();}).then(function(t){var p=document.getElementById('lp');p.textContent=t||'(empty)';p.scrollTop=p.scrollHeight;});}"
+            "function cl(){fetch('/syslog_clear').then(function(){fl();});}"
+            "fl();setInterval(fl,5000);"
+            "</script></body></html>";
+    r->send(200, "text/html", html);
   });
 
   server.on("/syslog_data", HTTP_GET, [](AsyncWebServerRequest *r) {
@@ -3286,25 +3264,19 @@ void startConfigPortal(bool forced)
     sm.trim(); ss.trim();
     String finalSSID = sm.length() ? sm : ss;
     if (finalSSID.length() == 0) {
-      r->send(400, "text/html",
-        "<html><body style='font-family:Arial;text-align:center;padding:40px;background:#111;color:#eee;'>"
-        "<h2>Missing SSID</h2><p><a href='/' style='color:#7cf;'>Go back</a></p></body></html>");
+      r->send(400, "text/html", msgPage("Missing SSID", "#e74c3c", "<a class='btn btnBlue' href='/'>Go back</a>"));
       return;
     }
     prefs.begin("wifi", false);
     prefs.putString("ssid", finalSSID);
     prefs.putString("pass", pw);
     prefs.end();
-    r->send(200, "text/html",
-      "<html><body style='font-family:Arial;text-align:center;padding:40px;background:#111;color:#eee;'>"
-      "<h2 style='color:#28a745;'>Saved!</h2><p>Rebooting...</p></body></html>");
+    r->send(200, "text/html", msgPage("Saved!", "#28a745", "<p>Rebooting...</p>"));
     delay(2000); ESP.restart();
   });
   server.on("/clear", HTTP_POST, [](AsyncWebServerRequest *r) {
     clearWiFiCredentials();
-    r->send(200, "text/html",
-      "<html><body style='font-family:Arial;text-align:center;padding:40px;background:#111;color:#eee;'>"
-      "<h2>WiFi Cleared</h2><p>Rebooting...</p></body></html>");
+    r->send(200, "text/html", msgPage("WiFi Cleared", "#7cf", "<p>Rebooting...</p>"));
     delay(1500); ESP.restart();
   });
 
