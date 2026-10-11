@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.2.0-rc7"
+#define FW_VERSION "1.2.0"
 
 #include <Arduino.h>
 #include <SPI.h>

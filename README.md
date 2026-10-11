@@ -406,6 +406,7 @@ The same message persists through snooze cycles — a fresh random pick happens 
 - An alarm caught up just after midnight uses the previous day's settings
 - Deleting a file that a scheduled day uses resets that day to the default sound
 - Refreshed web interface: every page uses the same card-based dark design (section cards, menu list, rounded controls, 24-hour pickers)
+- Web pages are now UTF-8: uploaded file names with å/ä/ö display correctly, and city names saved by older versions are converted automatically
 
 ### v1.1.0 (code review fixes)
 - **OTA safety** — Firmware update is closed while *Webpage* is Off (open in the BOOT-hold setup portal); automatic rollback to the previous firmware after 3 consecutive crash boots; OTA accepts only ESP32-C6 app images; interrupted updates no longer block the next one; real error messages on the update page
