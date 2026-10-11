@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.2.0-rc6"
+#define FW_VERSION "1.2.0-rc7"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -442,6 +442,30 @@ void clearWiFiCredentials() {
   prefs.remove("ssid"); prefs.remove("pass");
   prefs.end();
 }
+// Pages before v1.2.0 had no charset, so browsers posted city names with
+// a-umlaut etc. as Windows-1252/Latin-1 bytes. Pages are UTF-8 now: convert once.
+// Returns true if s was changed.
+bool latin1ToUtf8(String &s) {
+  const uint8_t *p = (const uint8_t *)s.c_str();
+  bool valid = true;
+  for (int i = 0; p[i] && valid; ) {
+    int n = p[i] < 0x80 ? 0 : (p[i] & 0xE0) == 0xC0 ? 1 : (p[i] & 0xF0) == 0xE0 ? 2 : (p[i] & 0xF8) == 0xF0 ? 3 : -1;
+    if (n < 0 || (n == 1 && p[i] < 0xC2)) { valid = false; break; }
+    for (int k = 1; k <= n && valid; k++) if ((p[i + k] & 0xC0) != 0x80) valid = false;  // stops at the NUL
+    if (valid) i += n + 1;
+  }
+  if (valid) return false;
+  String out;
+  out.reserve(s.length() * 2);
+  for (int i = 0; p[i]; i++) {
+    if (p[i] < 0x80) out += (char)p[i];
+    else { out += (char)(0xC0 | (p[i] >> 6)); out += (char)(0x80 | (p[i] & 0x3F)); }
+  }
+  s = out;
+  return true;
+}
+
+void saveLocationSettings();
 void loadLocationSettings() {
   prefs.begin("loc", true);
   cfgLat     = prefs.getFloat("lat", DEFAULT_LAT);
@@ -453,6 +477,12 @@ void loadLocationSettings() {
   cfgBrightness = prefs.getInt("bright", 255);
   webEnabled = prefs.getBool("webOn", true);
   prefs.end();
+  bool fixed = latin1ToUtf8(cfgCity);
+  fixed |= latin1ToUtf8(cfgCountry);
+  if (fixed) {
+    saveLocationSettings();
+    logMsg("Location name converted to UTF-8\n");
+  }
 }
 void saveLocationSettings() {
   prefs.begin("loc", false);
@@ -2084,6 +2114,13 @@ String clockHomePage()
 
   // Alarm section
   html += "<div class='card'><h3>Alarm</h3>";
+  // Weekly schedule (advanced). Day cards are built by the script below to keep the page small.
+  html += "<div class='srow'><div><b>Weekly schedule</b><small>Own time and sound for each day</small></div>";
+  html += "<label class='toggle'><input type='checkbox' id='schedOn'";
+  if (schedEnabled) html += " checked";
+  html += "><span class='slider'></span></label></div>";
+  html += "<div class='sep'></div>";
+
   // Single alarm (hidden, not removed, while the schedule is on: the script still binds to it)
   html += "<div id='single'";
   if (schedEnabled) html += " style='display:none;'";
@@ -2111,13 +2148,8 @@ String clockHomePage()
   if (alarmEnabled) html += " checked";
   html += "><span class='slider'></span></label><div class='muted' id='alarmStatus' style='margin-top:4px;'>";
   html += alarmFiring ? "RINGING" : (alarmSnoozing ? "Snoozing" : (alarmEnabled ? "Armed" : "Off"));
-  html += "</div></div></div><div class='sep'></div></div>";
+  html += "</div></div></div></div>";
 
-  // Weekly schedule (advanced). Day cards are built by the script below to keep the page small.
-  html += "<div class='srow'><div><b>Weekly schedule</b><small>Own time and sound for each day</small></div>";
-  html += "<label class='toggle'><input type='checkbox' id='schedOn'";
-  if (schedEnabled) html += " checked";
-  html += "><span class='slider'></span></label></div>";
   if (schedEnabled) {
     html += "<div class='badge' id='schedSt'>" + schedStatus() + "</div>";
     html += "<div class='week' id='wk'></div><div class='day' id='pane'></div>";
@@ -2739,6 +2771,8 @@ void setupSettingsEndpoints()
       cfgTzName  = postParam("tz");
       cfgCity    = postParam("city");
       cfgCountry = postParam("country");
+      latin1ToUtf8(cfgCity);     // old cached page without charset
+      latin1ToUtf8(cfgCountry);
 
       if (cfgTzName.length() == 0) cfgTzName = "auto";
 
