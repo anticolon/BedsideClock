@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.2.0-rc4"
+#define FW_VERSION "1.2.0-rc5"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -968,7 +968,7 @@ void checkSnooze() {
     alarmFiring = true;
     startAlarmSound();
     updateAlarmLabel();
-    logMsg("Snooze ended — alarm firing again!\n");
+    logMsg("Snooze ended - alarm firing again!\n");
   }
 }
 
@@ -2000,7 +2000,7 @@ String otaPage()
   html += "    }";
   html += "  };";
   html += "  xhr.onerror=function(){";
-  html += "    stat.textContent='Connection lost — device may be rebooting...';stat.style.color='#FFcc44';";
+  html += "    stat.textContent='Connection lost - device may be rebooting...';stat.style.color='#FFcc44';";
   html += "    btn.textContent='Rebooting...';";
   html += "    waitForReboot();";
   html += "  };";
@@ -2237,7 +2237,7 @@ String clockHomePage()
     html += "const DN=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'],ORD=[1,2,3,4,5,6,0];";
     html += "const p2=n=>('0'+n).slice(-2),SF=[...g('alarmSound').options].map(o=>o.value).filter(v=>v);";
     html += "SC.forEach(c=>{c[3]=c[3]>=0?SF[c[3]]:'';});";
-    html += "const snd=v=>'♪ '+(v?v.replace(/^\\//,''):'Default sound');";
+    html += "const snd=v=>'\\u266A '+(v?v.replace(/^\\//,''):'Default sound');";
     html += "let cur=new Date().getDay();";
     html += "function opts(n){let o='';for(let i=0;i<n;i++)o+='<option value='+i+'>'+p2(i)+'</option>';return o;}";
     html += "const pn=g('pane');";
