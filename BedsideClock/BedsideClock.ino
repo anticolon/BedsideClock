@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.1.0"
+#define FW_VERSION "1.2.0-rc1"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -300,7 +300,19 @@ bool   alarmFiring = false;    // currently ringing
 bool   alarmSnoozing = false; // snooze countdown active
 unsigned long snoozeEndTime = 0;
 int    snoozeDuration = 5;    // snooze minutes (saved in prefs)
-bool   alarmTriggeredToday = false;  // prevent re-trigger same minute
+time_t lastFiredTarget = 0;   // alarm moment that last rang (or was skipped), so it rings once
+String firingSound = "";       // tune picked when the alarm fired (snooze re-rings the same one)
+String playingFile = "";       // MP3 currently open (alarm or test)
+
+// Weekly schedule (advanced, opt-in). While on, it replaces the single
+// one-shot alarm: each active day rings every week. Index = tm_wday (0 = Sunday).
+struct SchedDay { uint8_t on, hour, min; };
+bool     schedEnabled = false;
+bool     schedStored  = false;   // schedule saved at least once (else seeded from the alarm)
+SchedDay sched[7];
+String   schedSound[7];          // "" = use the default tune (alarmSound)
+time_t   skipTarget = 0;         // scheduled alarm moment the user chose to skip (0 = none)
+const char *const dayNames[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
 
 // Alarm wake-up messages (random pick on fire)
 const char* alarmMessages[] = {
@@ -322,7 +334,6 @@ const char* alarmMessages[] = {
 };
 #define NUM_ALARM_MESSAGES (sizeof(alarmMessages) / sizeof(alarmMessages[0]))
 const char* currentAlarmMsg = alarmMessages[0];
-int    alarmLastTrigDay = -1;  // day of month last triggered
 
 // ==========================================================================
 //  Rotary Encoder state (ISR-driven full quadrature decode)
@@ -537,6 +548,14 @@ void loadAlarmSettings() {
   alarmSound   = prefs.getString("sound", "");
   alarmVolume  = prefs.getInt("vol", 50);
   snoozeDuration = prefs.getInt("snooze", 5);
+  schedEnabled = prefs.getBool("schedOn", false);
+  schedStored  = prefs.getBytes("sched", sched, sizeof(sched)) == sizeof(sched);
+  for (int d = 0; d < 7; d++) {
+    if (!schedStored || sched[d].hour > 23 || sched[d].min > 59) sched[d] = { 0, (uint8_t)alarmHour, (uint8_t)alarmMinute };
+    char key[6]; snprintf(key, sizeof(key), "snd%d", d);
+    schedSound[d] = prefs.getString(key, "");
+  }
+  skipTarget = (time_t)prefs.getLong64("skip", 0);
   prefs.end();
 }
 void saveAlarmSettings() {
@@ -548,6 +567,18 @@ void saveAlarmSettings() {
   prefs.putInt("vol", alarmVolume);
   prefs.putInt("snooze", snoozeDuration);
   prefs.end();
+}
+void saveSchedule() {
+  prefs.begin("alarm", false);
+  prefs.putBool("schedOn", schedEnabled);
+  prefs.putBytes("sched", sched, sizeof(sched));
+  for (int d = 0; d < 7; d++) {
+    char key[6]; snprintf(key, sizeof(key), "snd%d", d);
+    prefs.putString(key, schedSound[d]);
+  }
+  prefs.putLong64("skip", (int64_t)skipTarget);
+  prefs.end();
+  schedStored = true;
 }
 
 // ==========================================================================
@@ -670,16 +701,17 @@ void initAudio() {
 
 void startAlarmSound() {
   alarmMp3QuickEnds = 0;
-  if (!sdCardOk || alarmSound.length() == 0) { startFallbackTone(); return; }
+  if (!sdCardOk || firingSound.length() == 0) { startFallbackTone(); return; }
   stopAlarmSound();
   applyVolume();
-  mp3Source = new AudioFileSourceSD(alarmSound.c_str());
+  playingFile = firingSound;
+  mp3Source = new AudioFileSourceSD(playingFile.c_str());
   mp3Buffer = new AudioFileSourceBuffer(mp3Source, 2048);
   mp3Player = new AudioGeneratorMP3();
   if (mp3Player->begin(mp3Buffer, audioOut)) {
     audioPlaying = true;
     alarmMp3StartedAt = millis();
-    logMsg("Alarm playing: %s\n", alarmSound.c_str());
+    logMsg("Alarm playing: %s\n", playingFile.c_str());
   } else {
     logMsg("Failed to start MP3\n");
     delete mp3Player; mp3Player = nullptr;
@@ -709,7 +741,8 @@ void startTestSound() {
   if (!sdCardOk || alarmSound.length() == 0) return;
   stopAlarmSound();
   applyVolume();
-  mp3Source = new AudioFileSourceSD(alarmSound.c_str());
+  playingFile = alarmSound;
+  mp3Source = new AudioFileSourceSD(playingFile.c_str());
   mp3Buffer = new AudioFileSourceBuffer(mp3Source, 2048);
   mp3Player = new AudioGeneratorMP3();
   if (mp3Player->begin(mp3Buffer, audioOut)) {
@@ -767,7 +800,7 @@ void loopAudio() {
           return;
         }
         delay(50);  // brief pause before restarting
-        mp3Source = new AudioFileSourceSD(alarmSound.c_str());
+        mp3Source = new AudioFileSourceSD(playingFile.c_str());
         mp3Buffer = new AudioFileSourceBuffer(mp3Source, 2048);
         mp3Player = new AudioGeneratorMP3();
         if (mp3Player->begin(mp3Buffer, audioOut)) {
@@ -799,6 +832,52 @@ void loopAudio() {
 // No catch-up on the first check after boot.
 #define ALARM_CATCHUP_MIN 60
 
+// Alarm time for weekday wd (0 = Sunday); false if no alarm that day
+bool alarmForDay(int wd, int &h, int &m) {
+  if (!schedEnabled) { h = alarmHour; m = alarmMinute; return alarmEnabled; }
+  h = sched[wd].hour; m = sched[wd].min;
+  return sched[wd].on;
+}
+
+// Alarm moment on the date dayOffset days from `now` (negative = past), 0 if none
+time_t alarmOnDay(const struct tm &now, int dayOffset, int *wdOut) {
+  struct tm t = now;
+  t.tm_mday += dayOffset;
+  t.tm_hour = 12; t.tm_min = 0; t.tm_sec = 0; t.tm_isdst = -1;
+  mktime(&t);  // normalise the date and get its weekday
+  int h, m;
+  if (!alarmForDay(t.tm_wday, h, m)) return 0;
+  t.tm_hour = h; t.tm_min = m; t.tm_isdst = -1;
+  if (wdOut) *wdOut = t.tm_wday;
+  return mktime(&t);
+}
+
+// Next alarm moment after now, 0 if none. withSkipped = false passes over a skipped one.
+time_t nextAlarm(bool withSkipped, int *wdOut) {
+  struct tm ti;
+  if (!getLocalTime(&ti, 0)) return 0;
+  time_t now = mktime(&ti);
+  for (int d = 0; d <= 7; d++) {
+    time_t c = alarmOnDay(ti, d, wdOut);
+    if (c > now && (withSkipped || c != skipTarget)) return c;
+  }
+  return 0;
+}
+
+// "Tue 06:30" for the next alarm that will ring, "--:--" if none
+void nextAlarmStr(char *buf, int len) {
+  int wd = 0;
+  time_t t = nextAlarm(false, &wd);
+  if (!t) { snprintf(buf, len, "--:--"); return; }
+  struct tm lt; localtime_r(&t, &lt);
+  snprintf(buf, len, "%s %02d:%02d", dayNames[wd], lt.tm_hour, lt.tm_min);
+}
+
+// A skip that no longer matches the next alarm (schedule edited) is dropped
+void schedDropStaleSkip() {
+  if (skipTarget && (!schedEnabled || nextAlarm(true, nullptr) != skipTarget)) skipTarget = 0;
+}
+
 void checkAlarm() {
   static time_t lastCheck = 0;
 
@@ -808,35 +887,57 @@ void checkAlarm() {
   time_t prev = lastCheck ? lastCheck : now;
   lastCheck = now;  // track even while disarmed, so arming never fires retroactively
 
-  if (!alarmEnabled || alarmFiring) return;
-
-  // Reset trigger flag on new day
-  if (ti.tm_mday != alarmLastTrigDay) {
-    alarmTriggeredToday = false;
+  // Schedule label names the next alarm: refresh it once a minute (also after NTP sync)
+  static time_t lastLabelMin = 0;
+  if (schedEnabled && now / 60 != lastLabelMin && !alarmFiring && !alarmSnoozing) {
+    lastLabelMin = now / 60;
+    updateAlarmLabel();
   }
 
-  // Most recent occurrence of the alarm time (today, or yesterday if still ahead)
-  struct tm t = ti;
-  t.tm_hour = alarmHour;
-  t.tm_min = alarmMinute;
-  t.tm_sec = 0;
-  time_t target = mktime(&t);
-  if (target > now) target -= 24 * 3600;
+  if (alarmFiring || alarmSnoozing) return;
 
+  // Most recent alarm moment: today's, or yesterday's (with yesterday's settings)
+  int wd = 0;
+  time_t target = 0;
+  for (int d = 0; d >= -1 && !target; d--) {
+    time_t c = alarmOnDay(ti, d, &wd);
+    if (c && c <= now) target = c;
+  }
+
+  // A skip whose moment passed long ago (clock was off) is dropped
+  if (skipTarget && now - skipTarget > ALARM_CATCHUP_MIN * 60) {
+    skipTarget = 0;
+    saveSchedule();
+  }
+
+  if (!target || target == lastFiredTarget) return;
   bool inAlarmMinute = (now - target < 60);
   bool passedSinceLastCheck = (target > prev && now - target <= ALARM_CATCHUP_MIN * 60);
+  if (!inAlarmMinute && !passedSinceLastCheck) return;
 
-  if (!alarmTriggeredToday && (inAlarmMinute || passedSinceLastCheck)) {
-    alarmFiring = true;
-    alarmTriggeredToday = true;
-    alarmLastTrigDay = ti.tm_mday;
-    alarmEnabled = false;  // one-shot: disable after firing
-    currentAlarmMsg = alarmMessages[random(NUM_ALARM_MESSAGES)];
-    saveAlarmSettings();
-    startAlarmSound();
+  lastFiredTarget = target;
+  if (schedEnabled && target == skipTarget) {
+    skipTarget = 0;
+    saveSchedule();
     updateAlarmLabel();
-    logMsg("ALARM TRIGGERED!\n");
+    logMsg("Alarm skipped (%s)\n", dayNames[wd]);
+    return;
   }
+
+  // Tune: the day's own song if it still exists, else the default tune
+  firingSound = alarmSound;
+  if (schedEnabled && schedSound[wd].length() && sdCardOk && SD.exists(schedSound[wd].c_str()))
+    firingSound = schedSound[wd];
+
+  alarmFiring = true;
+  if (!schedEnabled) {
+    alarmEnabled = false;  // one-shot: disable after firing
+    saveAlarmSettings();
+  }
+  currentAlarmMsg = alarmMessages[random(NUM_ALARM_MESSAGES)];
+  startAlarmSound();
+  updateAlarmLabel();
+  logMsg("ALARM TRIGGERED! (%s)\n", schedEnabled ? dayNames[wd] : "single");
 }
 
 void dismissAlarm() {
@@ -872,7 +973,7 @@ void checkSnooze() {
 }
 
 void updateAlarmLabel() {
-  if (!label_alarm) return;
+  if (!label_alarm || menuActive) return;  // menuClose() → showClockUI() refreshes it
   if (alarmFiring) {
     lv_label_set_text(label_alarm, currentAlarmMsg);
     lv_obj_set_style_text_color(label_alarm, lv_color_hex(0xFFCC44), 0);
@@ -892,9 +993,14 @@ void updateAlarmLabel() {
     lv_obj_set_style_text_color(label_alarm, lv_color_hex(0x7CCFFF), 0);
     lv_obj_set_pos(label_alarm, 0, (gfx->height() / 2) + 44);  // original position
     lv_obj_clear_flag(label_alarm, LV_OBJ_FLAG_HIDDEN);
-  } else if (alarmEnabled) {
-    char buf[20];
-    snprintf(buf, sizeof(buf), "Alarm: %02d:%02d", alarmHour, alarmMinute);
+  } else if (schedEnabled ? nextAlarm(false, nullptr) != 0 : alarmEnabled) {
+    char buf[24];
+    if (schedEnabled) {
+      char nb[12]; nextAlarmStr(nb, sizeof(nb));
+      snprintf(buf, sizeof(buf), "Alarm: %s", nb);
+    } else {
+      snprintf(buf, sizeof(buf), "Alarm: %02d:%02d", alarmHour, alarmMinute);
+    }
     lv_label_set_text(label_alarm, buf);
     lv_obj_set_style_text_color(label_alarm, lv_color_hex(0xFF3333), 0);
     lv_obj_set_pos(label_alarm, 0, (gfx->height() / 2) + 44);  // original position
@@ -978,8 +1084,14 @@ void menuGetValueStr(int item, char *buf, int bufLen) {
       int pct = cfgBrightness * 100 / 255;
       snprintf(buf, bufLen, "%d%%", pct);
     } break;
-    case 1: snprintf(buf, bufLen, "%02d:%02d", alarmHour, alarmMinute); break; // Wake up
-    case 2: snprintf(buf, bufLen, "%s", alarmEnabled ? "On" : "Off"); break; // Alarm
+    case 1: // Wake up (schedule: next alarm, read-only)
+      if (schedEnabled) nextAlarmStr(buf, bufLen);
+      else snprintf(buf, bufLen, "%02d:%02d", alarmHour, alarmMinute);
+      break;
+    case 2: // Alarm (schedule: skip the next alarm)
+      if (schedEnabled) snprintf(buf, bufLen, "%s", skipTarget ? "Skip" : (nextAlarm(true, nullptr) ? "On" : "Off"));
+      else snprintf(buf, bufLen, "%s", alarmEnabled ? "On" : "Off");
+      break;
     case 3: snprintf(buf, bufLen, "%d min", snoozeDuration); break; // Snooze
     case 4: { // Tune
       if (alarmSound.length() == 0) snprintf(buf, bufLen, "(none)");
@@ -1236,11 +1348,17 @@ void menuHandleInput() {
     if (encoderShortPress()) {
       switch (menuCursor) {
         case 2: {
-          // Alarm: instant toggle, no edit mode
-          alarmEnabled = !alarmEnabled;
-          if (alarmEnabled) alarmTriggeredToday = false;
+          // Alarm: instant toggle, no edit mode. Schedule: skip / unskip the next alarm.
+          if (schedEnabled) {
+            skipTarget = skipTarget ? 0 : nextAlarm(true, nullptr);
+            saveSchedule();
+            updateMenuValue(1);
+            logMsg("Schedule: %s next alarm\n", skipTarget ? "skip" : "keep");
+          } else {
+            alarmEnabled = !alarmEnabled;
+            saveAlarmSettings();
+          }
           updateMenuValue(2);
-          saveAlarmSettings();
         } break;
         case 6: {
           // Test: instant toggle test sound
@@ -1254,6 +1372,7 @@ void menuHandleInput() {
           saveLocationSettings();
         } break;
         default: {
+          if (menuCursor == 1 && schedEnabled) break;  // schedule times are set on the web page
           // Enter edit mode for other items
           menuEditing = true;
           menuEditSub = 0;
@@ -1902,7 +2021,7 @@ String otaPage()
 String clockHomePage()
 {
   String html;
-  html.reserve(5000);
+  html.reserve(7000);
   html += "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
   html += "<title>Bedside Clock</title><style>";
   html += FPSTR(CSS);
@@ -1929,7 +2048,9 @@ String clockHomePage()
   // Alarm section
   html += "<hr style='border:0;border-top:1px solid #333;margin:16px 0;'>";
   html += "<label>Alarm</label>";
-  html += "<div class='alarm-row'>";
+  html += "<div class='alarm-row' id='single'";
+  if (schedEnabled) html += " style='display:none;'";
+  html += ">";
   // Hour select (00-23)
   html += "<select id='alarmH' style='width:70px;font-size:18px;text-align:center;'>";
   for (int h = 0; h < 24; h++) {
@@ -1957,8 +2078,17 @@ String clockHomePage()
   html += "</span>";
   html += "</div>";
 
+  // Weekly schedule (advanced). Rows are built by the script below to keep the page small.
+  html += "<div class='alarm-row'><label class='toggle'><input type='checkbox' id='schedOn'";
+  if (schedEnabled) html += " checked";
+  html += "><span class='slider'></span></label><span style='color:#aaa;font-size:14px;'>Weekly schedule</span></div>";
+  if (schedEnabled) {
+    html += "<div id='sched'><p style='color:#aaa;font-size:14px;margin:4px 0;' id='schedSt'>" + schedStatus() + "</p>";
+    html += "<div id='days'></div></div>";
+  }
+
   // Sound selection
-  html += "<label>Alarm Sound</label>";
+  html += schedEnabled ? "<label>Default Sound</label>" : "<label>Alarm Sound</label>";
   html += "<select id='alarmSound' style='margin-bottom:6px;'>";
   if (!sdCardOk) {
     html += "<option value=''>No SD card</option>";
@@ -2067,6 +2197,36 @@ String clockHomePage()
   html += "      fetch('/alarm/testStatus').then(r=>r.text()).then(r=>{updateTestBtn(r==='playing');});";
   html += "    });";
   html += "}";
+
+  // Weekly schedule: toggle reloads the page; rows are [on, hour, min, file index] per tm_wday
+  html += "const g=id=>document.getElementById(id);";
+  html += "g('schedOn').addEventListener('change',function(){fetch('/alarm/sched?en='+(this.checked?1:0)).then(()=>location.reload());});";
+  if (schedEnabled) {
+    html += "const SC=[";
+    for (int d = 0; d < 7; d++) {
+      int idx = -1;
+      for (int i = 0; i < mp3FileCount && idx < 0; i++) if (mp3Files[i] == schedSound[d]) idx = i;
+      html += "[" + String(sched[d].on) + "," + String(sched[d].hour) + "," + String(sched[d].min) + "," + String(idx) + "],";
+    }
+    html += "];";
+    html += "const DN=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];";
+    html += "function opts(n,sel){let o='';for(let i=0;i<n;i++)o+='<option value='+i+(i==sel?' selected':'')+'>'+('0'+i).slice(-2)+'</option>';return o;}";
+    html += "const SF=[...g('alarmSound').options].map(o=>o.value).filter(v=>v);";
+    html += "[1,2,3,4,5,6,0].forEach(d=>{const c=SC[d],row=document.createElement('div');";
+    html += "row.className='alarm-row';row.style.flexWrap='wrap';";
+    html += "row.innerHTML=\"<span style='width:40px;color:#fff;'>\"+DN[d]+\"</span>\"";
+    html += "+\"<label class='toggle'><input type='checkbox' id='on\"+d+\"'\"+(c[0]?' checked':'')+\"><span class='slider'></span></label>\"";
+    html += "+\"<select id='h\"+d+\"' style='width:70px;'>\"+opts(24,c[1])+\"</select><span style='color:#fff;'>:</span>\"";
+    html += "+\"<select id='m\"+d+\"' style='width:70px;'>\"+opts(60,c[2])+\"</select>\";";
+    html += "const s=g('alarmSound').cloneNode(true);s.id='s'+d;";
+    html += "[...s.options].forEach(o=>{if(!o.value)o.remove();});";
+    html += "s.insertBefore(new Option('Default',''),s.firstChild);s.value=c[3]>=0?SF[c[3]]:'';";
+    html += "row.appendChild(s);g('days').appendChild(row);});";
+    html += "g('days').addEventListener('change',e=>{const d=e.target.id.replace(/\\D/g,'');";
+    html += "const t=('0'+g('h'+d).value).slice(-2)+':'+('0'+g('m'+d).value).slice(-2);";
+    html += "fetch('/alarm/sched?d='+d+'&on='+(g('on'+d).checked?1:0)+'&time='+t+'&sound='+encodeURIComponent(g('s'+d).value))";
+    html += ".then(r=>r.text()).then(t=>{g('schedSt').textContent=t;});});";
+  }
   html += "</script>";
 
   html += "</body></html>";
@@ -2509,6 +2669,27 @@ static String sanitizeUploadName(const String &raw) {
 // ==========================================================================
 //  Setup shared web endpoints (settings + OTA) — used in both modes
 // ==========================================================================
+// "HH:MM" → h, m (false if malformed or out of range)
+static bool parseHHMM(const String &t, int &h, int &m) {
+  int colon = t.indexOf(':');
+  if (colon <= 0) return false;
+  h = t.substring(0, colon).toInt();
+  m = t.substring(colon + 1).toInt();
+  return h >= 0 && h <= 23 && m >= 0 && m <= 59;
+}
+
+// Schedule status line for the web page
+String schedStatus() {
+  char nb[12]; nextAlarmStr(nb, sizeof(nb));
+  if (!strcmp(nb, "--:--")) return "No alarm scheduled";
+  String st = "Next: " + String(nb);
+  if (skipTarget) {
+    struct tm lt; localtime_r(&skipTarget, &lt);
+    st += " (" + String(dayNames[lt.tm_wday]) + " skipped)";
+  }
+  return st;
+}
+
 void setupSettingsEndpoints()
 {
   #define WEB_GUARD() if (!webEnabled) { r->send(403, "text/plain", "Web interface disabled"); return; }
@@ -2575,23 +2756,13 @@ void setupSettingsEndpoints()
   // Alarm set
   server.on("/alarm/set", HTTP_GET, [](AsyncWebServerRequest *r) {
     WEB_GUARD();
-    if (r->hasParam("time")) {
-      String t = r->getParam("time")->value();
-      int colon = t.indexOf(':');
-      if (colon > 0) {
-        int h = t.substring(0, colon).toInt();
-        int m = t.substring(colon + 1).toInt();
-        if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
-          alarmHour = h;
-          alarmMinute = m;
-        }
-      }
+    int h, m;
+    if (r->hasParam("time") && parseHHMM(r->getParam("time")->value(), h, m)) {
+      alarmHour = h;
+      alarmMinute = m;
     }
     if (r->hasParam("on")) {
       alarmEnabled = r->getParam("on")->value().toInt() == 1;
-      if (alarmEnabled) {
-        alarmTriggeredToday = false;  // re-arm
-      }
     }
     if (r->hasParam("sound")) {
       String newSound = r->getParam("sound")->value();
@@ -2614,6 +2785,43 @@ void setupSettingsEndpoints()
     saveAlarmSettings();
     uiReqAlarmLabel = true;  // refresh label from main loop (LVGL not safe from async)
     r->send(200, "text/plain", "OK");
+  });
+
+  // Weekly schedule: en=0|1, or d=0..6 (0 = Sunday) with on, time=HH:MM, sound ("" = default tune)
+  server.on("/alarm/sched", HTTP_GET, [](AsyncWebServerRequest *r) {
+    WEB_GUARD();
+    if (r->hasParam("en")) {
+      bool en = r->getParam("en")->value().toInt() == 1;
+      if (en && !schedStored) {  // first use: start from the current alarm, all days inactive
+        for (int d = 0; d < 7; d++) {
+          sched[d] = { 0, (uint8_t)alarmHour, (uint8_t)alarmMinute };
+          schedSound[d] = "";
+        }
+      }
+      schedEnabled = en;
+      logMsg("Schedule %s\n", en ? "on" : "off");
+    }
+    int d = r->hasParam("d") ? r->getParam("d")->value().toInt() : -1;
+    if (d >= 0 && d < 7) {
+      int h, m;
+      if (r->hasParam("on")) sched[d].on = r->getParam("on")->value().toInt() == 1;
+      if (r->hasParam("time") && parseHHMM(r->getParam("time")->value(), h, m)) {
+        sched[d].hour = h;
+        sched[d].min = m;
+      }
+      if (r->hasParam("sound")) {
+        String snd = r->getParam("sound")->value();
+        bool known = snd.length() == 0;  // "" = default tune
+        for (int i = 0; i < mp3FileCount && !known; i++) known = (mp3Files[i] == snd);
+        if (known) schedSound[d] = snd;
+      }
+      logMsg("Schedule %s: %s %02d:%02d %s\n", dayNames[d], sched[d].on ? "on" : "off",
+             sched[d].hour, sched[d].min, schedSound[d].length() ? schedSound[d].c_str() : "(default)");
+    }
+    schedDropStaleSkip();
+    saveSchedule();
+    uiReqAlarmLabel = true;
+    r->send(200, "text/plain", schedStatus());
   });
 
   // Alarm volume (live preview)
@@ -2719,7 +2927,7 @@ void setupSettingsEndpoints()
           uploadFailLocked(400, "Invalid filename (must be .mp3)", false);
         } else if (total > UPLOAD_BUF_SIZE) {
           uploadFailLocked(413, "Chunk too large", false);
-        } else if (offset == 0 && audioPlaying && path == alarmSound) {
+        } else if (offset == 0 && audioPlaying && path == playingFile) {
           uploadFailLocked(409, "This file is playing - stop playback first", false);
         } else if (offset == 0) {
           // New upload — discard any stale one (client restarted or gave up)
@@ -2822,7 +3030,7 @@ void setupSettingsEndpoints()
     // Ensure leading slash
     if (!fname.startsWith("/")) fname = "/" + fname;
     logMsg("Delete request: [%s]\n", fname.c_str());
-    if (audioPlaying && fname == alarmSound) {
+    if (audioPlaying && fname == playingFile) {
       r->send(409, "text/plain", "This file is playing - stop playback first");
       return;
     }
@@ -2832,6 +3040,10 @@ void setupSettingsEndpoints()
         alarmSound = "";
         saveAlarmSettings();
       }
+      bool schedChanged = false;  // days using this file fall back to the default tune
+      for (int d = 0; d < 7; d++)
+        if (schedSound[d] == fname) { schedSound[d] = ""; schedChanged = true; }
+      if (schedChanged) saveSchedule();
       if (SD.remove(fname.c_str())) {
         reqRescanMP3 = true;  // rescan in the main loop (mp3Files[] isn't thread-safe)
         logMsg("Deleted OK: %s\n", fname.c_str());
@@ -2881,6 +3093,8 @@ void setupSettingsEndpoints()
     // Clear alarm sound since all files are gone
     alarmSound = "";
     saveAlarmSettings();
+    for (int d = 0; d < 7; d++) schedSound[d] = "";
+    saveSchedule();
     reqRescanMP3 = true;
     String msg = "Deleted " + String(deleted) + " files";
     if (failed > 0) msg += ", " + String(failed) + " failed";

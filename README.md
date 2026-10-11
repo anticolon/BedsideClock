@@ -31,6 +31,7 @@ Support my work: <https://buymeacoffee.com/kl.design>
 - MP3 alarm playback from SD card via I2S amplifier with pre-read audio buffer to prevent dropouts on shared SPI bus
 - Continuous looping of the alarm sound until snoozed or dismissed
 - One-shot alarm — fires once at the set time, then auto-disables (re-arm for the next day)
+- Optional weekly schedule (advanced) — its own time and song for each weekday, each day active or not; active days ring every week without re-arming, and the next alarm can be skipped from the menu
 - Adjustable volume (0–100%) with live preview
 - Sound file selection from all MP3s found on the SD card
 - Test playback to preview the alarm sound at the current volume
@@ -50,7 +51,7 @@ Support my work: <https://buymeacoffee.com/kl.design>
 ### Color-Coded Display States
 | State | Color | Display |
 |-------|-------|---------|
-| Alarm armed | Red | `Alarm: 07:00` |
+| Alarm armed | Red | `Alarm: 07:00` (weekly schedule: `Alarm: Tue 06:30`) |
 | Alarm firing | Warm gold | Random inspirational message |
 | Snooze countdown | Cyan | `Snooze: 4:32` |
 
@@ -74,6 +75,7 @@ A full settings menu accessible by holding the encoder button for 1 second:
 - **Test** toggles sound playback instantly on press
 - **Wake up** has two-stage editing: press to edit hour `[07]:00`, press again for minute `07:[00]`, press to save
 - **Long press** (1 second) exits the menu from anywhere
+- With the weekly schedule on, **Wake up** shows the next scheduled alarm (read-only, edit the schedule on the web page) and **Alarm** toggles between `On` and `Skip` (skip only the next alarm)
 - Long filenames are truncated with `...` to prevent overflow
 - All settings are persisted to flash memory and survive reboots
 - Interrupt-driven rotary encoder ensures reliable navigation even during fast rotation
@@ -81,7 +83,7 @@ A full settings menu accessible by holding the encoder button for 1 second:
 ### Web Interface
 A responsive, dark-themed web interface accessible from any device on the same network:
 
-- **Home page** — Set alarm time (24h format dropdowns), toggle alarm on/off, select alarm sound, adjust volume with slider, test playback, adjust display brightness
+- **Home page** — Set alarm time (24h format dropdowns), toggle alarm on/off, select alarm sound, adjust volume with slider, test playback, adjust display brightness, and switch on the weekly schedule (time, song and active switch per weekday)
 - **Manage Sound Files** — Upload new MP3 files to the SD card with a progress bar, download files with live progress on the button, view file list with file sizes, delete unwanted files, wipe entire SD card with double confirmation, see SD card usage statistics
 - **Location Settings** — Search for your city using the Open-Meteo Geocoding API, timezone is set automatically
 - **Firmware Update** — OTA (Over-The-Air) firmware updates with upload progress bar, automatic reboot detection, and redirect to home page when the device comes back online
@@ -331,13 +333,22 @@ The clock displays the time, date, current weather icon, temperature, and daily 
 
 **Via the web interface:** Open the clock's IP in a browser, set the hour and minute with the dropdown selectors, and toggle the switch to arm. You can also select the alarm sound, adjust volume, and test playback.
 
+### Weekly Schedule (Advanced)
+On the web page, switch on **Weekly schedule**. It replaces the single alarm with one row per weekday (Monday to Sunday). Each row has an active switch, a time and a song. *Default* uses the **Default Sound** selected below the schedule. The first time you switch it on, every day starts with the current alarm time, inactive, so you opt in day by day. Volume and snooze are shared.
+
+- Active days ring every week. Unlike the single alarm, they don't switch off after ringing
+- If a day's song is deleted, that day falls back to the default sound (and to the built-in beep if that is missing too)
+- The display shows the next alarm, e.g. `Alarm: Tue 06:30`
+- Sick day or holiday? In the menu, press **Alarm** to switch it to `Skip`: only the next alarm is skipped, then the schedule carries on. Press it again to undo
+- Switch the schedule off to return to the single alarm (its settings are kept)
+
 ### When the Alarm Fires
 1. A random inspirational message appears in warm gold text
 2. The selected MP3 plays continuously on loop
 3. **Tap** the encoder to snooze — the display shows a cyan countdown timer
 4. When the snooze timer expires, the alarm fires again
 5. **Long press** the encoder (1 second) to fully dismiss the alarm
-7. The alarm auto-disables after firing — re-arm it for the next day
+6. The single alarm auto-disables after firing — re-arm it for the next day (weekly-schedule alarms stay armed)
 
 ### Managing Sound Files
 Navigate to the clock's IP → **Manage Sound Files** to:
@@ -388,6 +399,12 @@ The same message persists through snooze cycles — a fresh random pick happens 
 ---
 
 ## Changelog
+
+### v1.2.0
+- Weekly alarm schedule (advanced, opt-in): its own time, song and active switch for each weekday, set on the web page
+- Menu **Alarm** skips the next scheduled alarm; the display shows the next alarm with its weekday
+- An alarm caught up just after midnight uses the previous day's settings
+- Deleting a file that a scheduled day uses resets that day to the default sound
 
 ### v1.1.0 (code review fixes)
 - **OTA safety** — Firmware update is closed while *Webpage* is Off (open in the BOOT-hold setup portal); automatic rollback to the previous firmware after 3 consecutive crash boots; OTA accepts only ESP32-C6 app images; interrupted updates no longer block the next one; real error messages on the update page
