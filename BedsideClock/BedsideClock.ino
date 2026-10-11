@@ -74,7 +74,7 @@
   Used via LVGL built-in fonts and custom clock font generation.
 ********************************************************************/
 
-#define FW_VERSION "1.2.0-rc1"
+#define FW_VERSION "1.2.0-rc2"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -1757,6 +1757,22 @@ const char CSS[] PROGMEM =
   "#citySelect{min-height:44px;}"
   ".spin{display:none;color:#7cf;margin:8px 0;}";
 
+// Weekly schedule cards (home page, only sent while the schedule is on)
+const char SCHED_CSS[] PROGMEM =
+  ".badge{display:inline-block;background:#12324a;color:#7cf;border-radius:999px;padding:6px 14px;font-size:13px;margin:4px 0 10px;}"
+  ".week{display:flex;gap:6px;}"
+  ".week span{flex:1;text-align:center;padding:6px 0;border-radius:8px;background:#222;color:#666;font-size:12px;font-weight:bold;transition:.3s;}"
+  ".week span.on{background:#28a745;color:#fff;}"
+  ".grp{color:#777;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin:16px 2px 4px;}"
+  ".day{background:#202020;border:1px solid #2a2a2a;border-left:4px solid #333;border-radius:12px;padding:10px 12px;margin:8px 0;transition:border-color .3s,background .3s;}"
+  ".day.on{border-left-color:#28a745;background:#1e2620;}"
+  ".day.ok{border-color:#7cf;}"
+  ".dh{display:flex;align-items:center;gap:10px;}"
+  ".dh b{flex:1;color:#fff;font-size:15px;}"
+  ".day input[type=time]{width:auto;margin:0;padding:6px 10px;font-size:20px;font-weight:bold;background:#151515;border-color:#333;color-scheme:dark;}"
+  ".day select{margin:8px 0 0;padding:8px 10px;font-size:13px;background:#151515;border-color:#333;}"
+  ".day:not(.on) input[type=time],.day:not(.on) select{opacity:.45;}";
+
 // ==========================================================================
 //  HTML — WiFi Config Page
 // ==========================================================================
@@ -2037,6 +2053,10 @@ String clockHomePage()
   html += ".toggle .slider:before{content:'';position:absolute;height:22px;width:22px;left:3px;bottom:3px;background:#888;border-radius:50%;transition:.3s;}";
   html += ".toggle input:checked+.slider{background:#28a745;}";
   html += ".toggle input:checked+.slider:before{transform:translateX(24px);background:#fff;}";
+  html += ".srow{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#222;border-radius:12px;padding:12px 14px;margin:12px 0 8px;}";
+  html += ".srow b{display:block;color:#fff;font-size:15px;}.srow small{color:#888;font-size:12px;}";
+  html += ".srow .toggle,.dh .toggle{margin:0;flex:none;}";
+  if (schedEnabled) html += FPSTR(SCHED_CSS);
   html += "</style></head><body><div class='box'>";
   html += "<h2>Bedside Clock <span style='font-size:12px;color:#555;'>v" + String(FW_VERSION) + "</span></h2>";
   html += "<p style='color:#aaa;'>Location: <b style='color:#fff;'>" + htmlAttrEscape(cfgCity) + ", " + htmlAttrEscape(cfgCountry) + "</b></p>";
@@ -2078,13 +2098,14 @@ String clockHomePage()
   html += "</span>";
   html += "</div>";
 
-  // Weekly schedule (advanced). Rows are built by the script below to keep the page small.
-  html += "<div class='alarm-row'><label class='toggle'><input type='checkbox' id='schedOn'";
+  // Weekly schedule (advanced). Day cards are built by the script below to keep the page small.
+  html += "<div class='srow'><div><b>Weekly schedule</b><small>Own time and sound for each day</small></div>";
+  html += "<label class='toggle'><input type='checkbox' id='schedOn'";
   if (schedEnabled) html += " checked";
-  html += "><span class='slider'></span></label><span style='color:#aaa;font-size:14px;'>Weekly schedule</span></div>";
+  html += "><span class='slider'></span></label></div>";
   if (schedEnabled) {
-    html += "<div id='sched'><p style='color:#aaa;font-size:14px;margin:4px 0;' id='schedSt'>" + schedStatus() + "</p>";
-    html += "<div id='days'></div></div>";
+    html += "<div class='badge' id='schedSt'>" + schedStatus() + "</div>";
+    html += "<div class='week' id='wk'></div><div id='days'></div>";
   }
 
   // Sound selection
@@ -2209,23 +2230,23 @@ String clockHomePage()
       html += "[" + String(sched[d].on) + "," + String(sched[d].hour) + "," + String(sched[d].min) + "," + String(idx) + "],";
     }
     html += "];";
-    html += "const DN=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];";
-    html += "function opts(n,sel){let o='';for(let i=0;i<n;i++)o+='<option value='+i+(i==sel?' selected':'')+'>'+('0'+i).slice(-2)+'</option>';return o;}";
-    html += "const SF=[...g('alarmSound').options].map(o=>o.value).filter(v=>v);";
-    html += "[1,2,3,4,5,6,0].forEach(d=>{const c=SC[d],row=document.createElement('div');";
-    html += "row.className='alarm-row';row.style.flexWrap='wrap';";
-    html += "row.innerHTML=\"<span style='width:40px;color:#fff;'>\"+DN[d]+\"</span>\"";
-    html += "+\"<label class='toggle'><input type='checkbox' id='on\"+d+\"'\"+(c[0]?' checked':'')+\"><span class='slider'></span></label>\"";
-    html += "+\"<select id='h\"+d+\"' style='width:70px;'>\"+opts(24,c[1])+\"</select><span style='color:#fff;'>:</span>\"";
-    html += "+\"<select id='m\"+d+\"' style='width:70px;'>\"+opts(60,c[2])+\"</select>\";";
+    html += "const DN=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'],ORD=[1,2,3,4,5,6,0];";
+    html += "const p2=n=>('0'+n).slice(-2),SF=[...g('alarmSound').options].map(o=>o.value).filter(v=>v);";
+    html += "function wk(){g('wk').innerHTML=ORD.map(d=>'<span'+(g('on'+d).checked?\" class='on'\":'')+'>'+DN[d][0]+'</span>').join('');}";
+    html += "ORD.forEach(d=>{const c=SC[d],e=document.createElement('div');";
+    html += "if(d==1||d==6){const h=document.createElement('div');h.className='grp';h.textContent=d==1?'Weekdays':'Weekend';g('days').appendChild(h);}";
+    html += "e.className='day'+(c[0]?' on':'');e.id='c'+d;";
+    html += "e.innerHTML=\"<div class='dh'><b>\"+DN[d]+\"</b><input type='time' id='t\"+d+\"' value='\"+p2(c[1])+':'+p2(c[2])+\"' required>\"";
+    html += "+\"<label class='toggle'><input type='checkbox' id='on\"+d+\"'\"+(c[0]?' checked':'')+\"><span class='slider'></span></label></div>\";";
     html += "const s=g('alarmSound').cloneNode(true);s.id='s'+d;";
-    html += "[...s.options].forEach(o=>{if(!o.value)o.remove();});";
-    html += "s.insertBefore(new Option('Default',''),s.firstChild);s.value=c[3]>=0?SF[c[3]]:'';";
-    html += "row.appendChild(s);g('days').appendChild(row);});";
-    html += "g('days').addEventListener('change',e=>{const d=e.target.id.replace(/\\D/g,'');";
-    html += "const t=('0'+g('h'+d).value).slice(-2)+':'+('0'+g('m'+d).value).slice(-2);";
+    html += "[...s.options].forEach(o=>{if(!o.value)o.remove();else o.text='\\u266A '+o.text.replace(/^\\//,'');});";
+    html += "s.insertBefore(new Option('\\u266A Default sound',''),s.firstChild);s.value=c[3]>=0?SF[c[3]]:'';";
+    html += "e.appendChild(s);g('days').appendChild(e);});";
+    html += "wk();";
+    html += "g('days').addEventListener('change',e=>{const d=e.target.id.replace(/\\D/g,''),c=g('c'+d),t=g('t'+d).value;";
+    html += "if(!t)return;c.classList.toggle('on',g('on'+d).checked);wk();";
     html += "fetch('/alarm/sched?d='+d+'&on='+(g('on'+d).checked?1:0)+'&time='+t+'&sound='+encodeURIComponent(g('s'+d).value))";
-    html += ".then(r=>r.text()).then(t=>{g('schedSt').textContent=t;});});";
+    html += ".then(r=>r.text()).then(r=>{g('schedSt').textContent=r;c.classList.add('ok');setTimeout(()=>c.classList.remove('ok'),700);});});";
   }
   html += "</script>";
 
